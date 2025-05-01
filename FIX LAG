@@ -1,0 +1,476 @@
+--[[
+  Advanced Adaptive Anti-Lag v6
+  - Peningkatan Stabilitas dengan pcall
+  - Notifikasi Status (Start & Error)
+  - Target FPS Aktif & Prioritas Render
+  - Bottleneck Analysis (Render/Physics/Memory/Script-Inferred)
+  - Integrasi Dinamis StreamingEnabled
+  - Reversibilitas Optimasi
+--]]
+
+local RunService = game:GetService("RunService")
+local Stats = game:GetService("Stats")
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local Lighting = game:GetService("Lighting")
+local CollectionService = game:GetService("CollectionService")
+local Debris = game:GetService("Debris")
+local UserSettings = UserSettings()
+local StarterGui = game:GetService("StarterGui") -- Untuk notifikasi UI
+
+local player = Players.LocalPlayer
+local camera = Workspace.CurrentCamera
+
+-- ================== Configuration ==================
+-- (Konfigurasi sama seperti v5)
+local TARGET_FPS = 120
+local MINIMUM_ACCEPTABLE_FPS = 60
+local CRITICAL_FPS = 45
+local HIGH_INSTANCE_MEM = 800
+local CRITICAL_INSTANCE_MEM = 1200
+local HIGH_LUA_HEAP_MEM = 150
+local CRITICAL_LUA_HEAP_MEM = 250
+local HIGH_RENDER_TIME_MS = (1000 / TARGET_FPS) * 0.6
+local HIGH_PHYSICS_TIME_MS = (1000 / TARGET_FPS) * 0.3
+local CHECK_INTERVAL = 2
+local OPTIMIZATION_COOLDOWN = 8
+local RECOVERY_CHECK_INTERVAL = 5
+local ENABLE_DYNAMIC_STREAMING = true
+local STREAMING_TARGET_RADIUS_HIGH_PERF = 2048
+local STREAMING_TARGET_RADIUS_LOW_PERF = 512
+local STREAMING_MIN_RADIUS_HIGH_PERF = 128
+local STREAMING_MIN_RADIUS_LOW_PERF = 64
+local ENABLE_GRAPHICS_TWEAKS = true
+local ENABLE_LIGHTING_SCALING = true
+local ENABLE_PARTICLE_SCALING = true
+local ENABLE_SOUND_CULLING = true
+local ENABLE_PHYSICS_THROTTLING = true
+local ENABLE_NON_ESSENTIAL_SCRIPT_CONTROL = false
+local ENABLE_DEBRIS_CLEANUP = true
+local ENABLE_UI_NOTIFICATIONS = false -- Set true untuk notifikasi UI selain console
+
+-- ================== State Variables ==================
+-- (Variabel state sama seperti v5)
+local performanceHistory = {}
+local HISTORY_LENGTH = 5
+local currentFPS = TARGET_FPS
+local isCoolingDown = false
+local currentOptimizationProfile = {
+	level = 0, bottleneck = "None", graphicsQuality = -1, shadowsEnabled = true,
+	fogEnd = -1, particleRateScale = 1.0, streamingRadius = Workspace.StreamingTargetRadius,
+	minStreamingRadius = Workspace.StreamingMinRadius, originalParticleStates = {},
+	originalLightingStates = {}, originalPhysicsStates = {}, disabledScripts = {},
+}
+local fpsBuffer = {}
+local fpsBufferIndex = 1
+local FPS_BUFFER_SIZE = 15
+local scriptInitialized = false
+
+-- ================== Helper Functions ==================
+local function safeCall(func, ...)
+	local success, result = pcall(func, ...)
+	if not success then
+		local errorMsg = string.format("AntiLag Error: %s", tostring(result))
+		warn(errorMsg)
+		if ENABLE_UI_NOTIFICATIONS then
+			pcall(StarterGui.SetCore, StarterGui, "SendNotification", {
+				Title = "AntiLag Internal Error",
+				Text = "An error occurred in the optimization script. Check console (F9).",
+				Duration = 5,
+				-- Button1 = "Dismiss" -- Optional
+			})
+		end
+	end
+	return success, result
+end
+
+local function notify(title, text, duration)
+	if ENABLE_UI_NOTIFICATIONS then
+		safeCall(StarterGui.SetCore, StarterGui, "SendNotification", {
+			Title = title, Text = text, Duration = duration or 3
+		})
+	else
+		print(string.format("AntiLag Notify: [%s] %s", title, text))
+	end
+end
+
+-- ================= Performance Monitoring =================
+-- (Sama seperti v5)
+RunService.RenderStepped:Connect(function(dt)
+	if dt <= 0 then return end
+	fpsBuffer[fpsBufferIndex] = 1 / dt
+	fpsBufferIndex = (fpsBufferIndex % FPS_BUFFER_SIZE) + 1
+	local sum = 0
+	for i = 1, #fpsBuffer do sum = sum + fpsBuffer[i] end
+	currentFPS = sum / #fpsBuffer
+end)
+
+local function updatePerformanceMetrics()
+	-- Dibungkus safeCall untuk stabilitas tambahan jika Stats service bermasalah
+	local success, metrics = safeCall(function()
+		return {
+			fps = currentFPS,
+			renderMs = Stats:GetHeartbeatTimeMs("Render"),
+			physicsMs = Stats:GetHeartbeatTimeMs("Physics"),
+			signalMs = Stats:GetHeartbeatTimeMs("Signal"),
+			luaHeapMb = Stats:GetMemoryUsageMbForTag("LuaHeap"),
+			instanceMb = Stats:GetMemoryUsageMbForTag("Instances"),
+			totalMemoryMb = Stats:GetTotalMemoryUsageMb(),
+			streamingRadius = Workspace.StreamingTargetRadius,
+			time = tick()
+		}
+	end)
+
+	if success and metrics then
+		table.insert(performanceHistory, 1, metrics)
+		if #performanceHistory > HISTORY_LENGTH then table.remove(performanceHistory) end
+		return metrics
+	else
+		-- Kembalikan nilai default atau terakhir jika gagal update
+		return performanceHistory[1] or { fps = TARGET_FPS, renderMs=0, physicsMs=0, signalMs=0, luaHeapMb=0, instanceMb=0, totalMemoryMb=0, streamingRadius=Workspace.StreamingTargetRadius, time=tick() }
+	end
+end
+
+local function getAveragePerformance()
+	local avgFps, avgRender, avgPhysics, avgLua, avgInstance = 0, 0, 0, 0, 0
+	local count = #performanceHistory
+	if count == 0 then return TARGET_FPS, 0, 0, 0, 0 end
+	for _, record in ipairs(performanceHistory) do
+		avgFps += record.fps; avgRender += record.renderMs; avgPhysics += record.physicsMs
+		avgLua += record.luaHeapMb; avgInstance += record.instanceMb
+	end
+	return avgFps/count, avgRender/count, avgPhysics/count, avgLua/count, avgInstance/count
+end
+
+
+-- ================= Bottleneck Identification =================
+-- (Sama seperti v5)
+local function identifyBottleneck(avgFps, avgRender, avgPhysics, avgLua, avgInstance)
+	local frameTimeBudget = 1000 / TARGET_FPS
+	if avgFps < CRITICAL_FPS then return "Critical", 3 end
+	local isRenderBound = avgRender > HIGH_RENDER_TIME_MS or avgRender > frameTimeBudget * 0.5
+	local isPhysicsBound = avgPhysics > HIGH_PHYSICS_TIME_MS or avgPhysics > frameTimeBudget * 0.3
+	local isLuaMemoryBound = avgLua > HIGH_LUA_HEAP_MEM
+	local isInstanceMemoryBound = avgInstance > HIGH_INSTANCE_MEM
+	if avgFps < MINIMUM_ACCEPTABLE_FPS then
+		if isRenderBound and avgRender > avgPhysics then return "Render", 2 end
+		if isPhysicsBound and avgPhysics > avgRender then return "Physics", 2 end
+		if isLuaMemoryBound and avgLua > CRITICAL_LUA_HEAP_MEM then return "Memory_Lua", 2 end
+		if isInstanceMemoryBound and avgInstance > CRITICAL_INSTANCE_MEM then return "Memory_Instance", 2 end
+		return "Mixed", 2
+	elseif avgFps < TARGET_FPS then
+		if isRenderBound then return "Render", 1 end
+		if isPhysicsBound then return "Physics", 1 end
+		if isLuaMemoryBound then return "Memory_Lua", 1 end
+		if isInstanceMemoryBound then return "Memory_Instance", 1 end
+		return "Mixed", 1
+	end
+	return "None", 0
+end
+
+-- ================= Optimization Modules (dengan safeCall) =================
+
+-- Fungsi revertOptimizations dari v5 (sudah ada pcall di dalamnya)
+local function revertOptimizations(profileKey)
+	local originalStates = currentOptimizationProfile[profileKey]
+	if not originalStates then return end
+	-- print("AntiLag: Reverting", profileKey) -- Optional Debug
+	local instancesToRemove = {}
+	for instance, originalState in pairs(originalStates) do
+		local success, exists = pcall(function() return instance and instance.Parent end)
+		if not success or not exists then
+			table.insert(instancesToRemove, instance) -- Tandai untuk dihapus dari state
+			continue
+		end
+		local revertSuccess = safeCall(function()
+			for property, value in pairs(originalState) do
+				if instance[property] ~= value then
+					instance[property] = value
+				end
+			end
+		end)
+		if revertSuccess then
+			table.insert(instancesToRemove, instance) -- Tandai untuk dihapus setelah revert
+		end
+	end
+	-- Hapus state yang sudah direvert atau invalid
+	for _, instance in ipairs(instancesToRemove) do
+		originalStates[instance] = nil
+	end
+end
+
+
+local function applyGraphicsTweaks(level, profile)
+	if not ENABLE_GRAPHICS_TWEAKS then return end
+	safeCall(function() -- Bungkus seluruh fungsi
+		if level == 0 then
+			if profile.graphicsQuality ~= -1 then
+				pcall(settings().Rendering.SetQualityLevel, profile.graphicsQuality)
+				profile.graphicsQuality = -1
+			end
+			return
+		end
+		if profile.graphicsQuality == -1 then profile.graphicsQuality = settings().Rendering.QualityLevel end
+		local targetQuality = Enum.QualityLevel.Level01
+		if level == 1 then targetQuality = Enum.QualityLevel.Level03 end
+		if level == 2 then targetQuality = Enum.QualityLevel.Level02 end
+		if settings().Rendering.QualityLevel > targetQuality then
+			pcall(settings().Rendering.SetQualityLevel, targetQuality)
+		end
+		for _, part in ipairs(CollectionService:GetTagged("OptimizableMesh")) do
+			if part:IsA("MeshPart") or part:IsA("UnionOperation") then
+				local targetFidelity = Enum.RenderFidelity.Automatic
+				if level >= 2 then targetFidelity = Enum.RenderFidelity.Performance end
+				if part.RenderFidelity ~= targetFidelity then part.RenderFidelity = targetFidelity end
+			end
+		end
+	end)
+end
+
+local function applyLightingScaling(level, profile)
+	if not ENABLE_LIGHTING_SCALING then return end
+	safeCall(function()
+		if level == 0 then
+			if Lighting.GlobalShadows ~= profile.shadowsEnabled then Lighting.GlobalShadows = profile.shadowsEnabled end
+			if profile.fogEnd ~= -1 and Lighting.FogEnd ~= profile.fogEnd then Lighting.FogEnd = profile.fogEnd; profile.fogEnd = -1 end
+			revertOptimizations("originalLightingStates")
+			return
+		end
+		if profile.fogEnd == -1 then profile.fogEnd = Lighting.FogEnd end
+		local targetShadows = level < 2
+		local targetFogEnd = profile.fogEnd
+		if level == 1 then targetFogEnd = math.max(profile.fogEnd * 0.9, 800) end
+		if level >= 2 then targetFogEnd = math.max(profile.fogEnd * 0.7, 500) end
+		if Lighting.GlobalShadows ~= targetShadows then Lighting.GlobalShadows = targetShadows end
+		if Lighting.FogEnd ~= targetFogEnd then Lighting.FogEnd = targetFogEnd end
+		local effectsToDisable = {}
+		if level >= 2 then table.insert(effectsToDisable, "Bloom") end
+		if level >= 3 then table.insert(effectsToDisable, "ColorCorrection"); table.insert(effectsToDisable, "SunRays") end
+		for _, tag in ipairs({"OptimizableLighting", "Atmosphere", "Sky"}) do
+			for _, effect in ipairs(CollectionService:GetTagged(tag) or Lighting:GetChildren()) do
+				if table.find(effectsToDisable, effect.ClassName) then
+					if effect.Enabled and not profile.originalLightingStates[effect] then
+						profile.originalLightingStates[effect] = { Enabled = true }
+						effect.Enabled = false
+					end
+				end
+			end
+		end
+	end)
+end
+
+local function applyParticleScaling(level, profile)
+	if not ENABLE_PARTICLE_SCALING then return end
+	safeCall(function()
+		if level == 0 then
+			profile.particleRateScale = 1.0
+			revertOptimizations("originalParticleStates")
+			return
+		end
+		local targetScale = 1.0; local disableThreshold = 3
+		if level == 1 then targetScale = 0.5 end
+		if level >= 2 then targetScale = 0.2 end
+		profile.particleRateScale = targetScale
+		for _, emitter in ipairs(CollectionService:GetTagged("OptimizableEffect")) do
+			if not emitter or not emitter.Parent then revertOptimizations("originalParticleStates"); continue end -- Cleanup state if invalid
+			if emitter:IsA("ParticleEmitter") then
+				local originalState = profile.originalParticleStates[emitter]
+				if not originalState then originalState = { Enabled = emitter.Enabled, Rate = emitter.Rate }; profile.originalParticleStates[emitter] = originalState end
+				local targetEnabled = level < disableThreshold and originalState.Enabled
+				local targetRate = math.floor(originalState.Rate * targetScale)
+				if emitter.Enabled ~= targetEnabled then emitter.Enabled = targetEnabled end
+				if emitter.Rate ~= targetRate then emitter.Rate = targetRate end
+			elseif (emitter:IsA("Trail") or emitter:IsA("Beam")) then
+				local originalState = profile.originalParticleStates[emitter]
+				if not originalState then originalState = { Enabled = emitter.Enabled }; profile.originalParticleStates[emitter] = originalState end
+				local targetEnabled = level < disableThreshold and originalState.Enabled
+				if emitter.Enabled ~= targetEnabled then emitter.Enabled = targetEnabled end
+			end
+		end
+	end)
+end
+
+local function applySoundCulling(level, profile)
+	if not ENABLE_SOUND_CULLING or level == 0 then return end
+	safeCall(function()
+		local playerPos = player.Character and player.Character.PrimaryPart and player.Character.PrimaryPart.Position
+		if not playerPos then return end
+		local CULL_DISTANCE_VOL = 150; local CULL_DISTANCE_STOP = 80
+		if level == 1 then CULL_DISTANCE_VOL = 100; CULL_DISTANCE_STOP = 60 end
+		if level >= 2 then CULL_DISTANCE_VOL = 80; CULL_DISTANCE_STOP = 40 end
+		for _, sound in ipairs(CollectionService:GetTagged("OptimizableSound")) do
+			if sound and sound:IsA("Sound") and sound.IsPlaying then
+				local parentPart = sound.Parent:IsA("BasePart") and sound.Parent
+				if parentPart then
+					local distance = (playerPos - parentPart.Position).Magnitude
+					if distance > CULL_DISTANCE_STOP then
+						if sound.Volume > 0 then sound.Volume = 0 end
+					elseif distance > CULL_DISTANCE_VOL then
+						if sound.Volume > 0.1 then sound.Volume = 0.1 end
+					end
+				elseif level >= 2 then
+					sound.Volume = 0
+				end
+			end
+		end
+	end)
+end
+
+local function applyPhysicsThrottling(level, profile)
+	if not ENABLE_PHYSICS_THROTTLING then return end
+	safeCall(function()
+		if level == 0 then
+			revertOptimizations("originalPhysicsStates")
+			return
+		end
+		local playerPos = player.Character and player.Character.PrimaryPart and player.Character.PrimaryPart.Position
+		if not playerPos then return end
+		local ANCHOR_DISTANCE = 200
+		if level >= 2 then ANCHOR_DISTANCE = 100 end
+		for _, part in ipairs(CollectionService:GetTagged("OptimizablePhysics")) do
+			if part and part:IsA("BasePart") and part.Parent then
+				if not part.Anchored then
+					local originalState = profile.originalPhysicsStates[part]
+					if not originalState then originalState = { Anchored = false }; profile.originalPhysicsStates[part] = originalState end
+					local distance = (playerPos - part.Position).Magnitude
+					if distance > ANCHOR_DISTANCE then part.Anchored = true end
+				end
+			else
+				-- Cleanup state if part is invalid/removed
+				if profile.originalPhysicsStates[part] then profile.originalPhysicsStates[part] = nil end
+			end
+		end
+	end)
+end
+
+local function applyDynamicStreaming(level, profile)
+	if not ENABLE_DYNAMIC_STREAMING or not Workspace.StreamingEnabled then return end
+	safeCall(function()
+		local targetRadius = STREAMING_TARGET_RADIUS_HIGH_PERF
+		local targetMinRadius = STREAMING_MIN_RADIUS_HIGH_PERF
+		if level == 1 then targetRadius = math.max(STREAMING_TARGET_RADIUS_LOW_PERF, profile.streamingRadius * 0.8); targetMinRadius = math.max(STREAMING_MIN_RADIUS_LOW_PERF, profile.minStreamingRadius * 0.9) end
+		if level >= 2 then targetRadius = STREAMING_TARGET_RADIUS_LOW_PERF; targetMinRadius = STREAMING_MIN_RADIUS_LOW_PERF end
+		if Workspace.StreamingTargetRadius ~= targetRadius then Workspace.StreamingTargetRadius = targetRadius end
+		if Workspace.StreamingMinRadius ~= targetMinRadius then Workspace.StreamingMinRadius = targetMinRadius end
+	end)
+end
+
+local function applyNonEssentialScriptControl(level, profile)
+	if not ENABLE_NON_ESSENTIAL_SCRIPT_CONTROL then return end
+	safeCall(function()
+		if level == 0 then
+			for scriptInstance, _ in pairs(profile.disabledScripts) do
+				if scriptInstance and scriptInstance:IsA("LocalScript") then scriptInstance.Disabled = false end
+			end
+			profile.disabledScripts = {}
+			return
+		end
+		if level >= 3 then
+			for _, scriptInstance in ipairs(CollectionService:GetTagged("NonEssentialLocalScript")) do
+				if scriptInstance and scriptInstance:IsA("LocalScript") and not scriptInstance.Disabled then
+					if not profile.disabledScripts[scriptInstance] then scriptInstance.Disabled = true; profile.disabledScripts[scriptInstance] = true end
+				end
+			end
+		end
+	end)
+end
+
+local function applyDebrisCleanup(level)
+    if not ENABLE_DEBRIS_CLEANUP or level < 2 then return end
+	safeCall(function()
+		local cleanupCount = 0
+		for _, item in ipairs(CollectionService:GetTagged("OptimizableEffect")) do
+			if item and (not item.Parent or item.Parent == Workspace.Terrain or item.Parent == Workspace) then
+				if item:IsA("BasePart") or item:IsA("ParticleEmitter") or item:IsA("PointLight") or item:IsA("Trail") or item:IsA("Beam") then
+					 Debris:AddItem(item, 0.1)
+					 cleanupCount += 1
+				end
+			end
+			if cleanupCount > 50 then break end
+		end
+	end)
+end
+
+
+-- ================= Decision Engine =================
+-- (Sama seperti v5, tapi memanggil fungsi apply yang sudah dibungkus pcall)
+local function runOptimizations(targetLevel, bottleneck, profile)
+	if isCoolingDown and targetLevel > profile.level then return profile.level end
+
+	local actualLevel = targetLevel
+	applyDynamicStreaming(actualLevel, profile)
+	if bottleneck == "Render" or bottleneck == "Mixed" or bottleneck == "Critical" or actualLevel > 0 then
+		applyGraphicsTweaks(actualLevel, profile)
+		applyLightingScaling(actualLevel, profile)
+		applyParticleScaling(actualLevel, profile)
+        applyDebrisCleanup(actualLevel)
+	end
+	if bottleneck == "Physics" or bottleneck == "Mixed" or bottleneck == "Critical" or actualLevel > 0 then
+		applyPhysicsThrottling(actualLevel, profile)
+	end
+	if bottleneck == "Memory_Lua" or bottleneck == "Critical" then
+		applyNonEssentialScriptControl(actualLevel, profile)
+	end
+    if bottleneck == "Memory_Instance" or bottleneck == "Critical" then
+        applyParticleScaling(math.max(actualLevel, 2), profile)
+        applyPhysicsThrottling(math.max(actualLevel, 2), profile)
+    end
+	if actualLevel > 0 then
+		applySoundCulling(actualLevel, profile)
+	end
+
+	if actualLevel ~= profile.level then
+		-- Optional: Beri notifikasi saat level berubah
+		-- notify("AntiLag Update", string.format("Optimization level changed to %d (Bottleneck: %s)", actualLevel, bottleneck), 2)
+	end
+
+	if actualLevel > profile.level then
+		isCoolingDown = true
+		task.delay(OPTIMIZATION_COOLDOWN, function() isCoolingDown = false end)
+	end
+
+	profile.level = actualLevel
+	profile.bottleneck = bottleneck
+	return actualLevel
+end
+
+-- ================= Main Loop (dengan pcall utama) =================
+task.spawn(function()
+	-- Tunggu beberapa saat agar game sempat load
+	task.wait(5)
+	if not player or not Workspace.CurrentCamera then
+		warn("AntiLag Error: Player or Camera not found on initialization.")
+		return -- Hentikan jika komponen penting tidak ada
+	end
+
+	scriptInitialized = true
+	notify("AntiLag Status", "Optimizer v6 Initialized (Target: "..TARGET_FPS.." FPS)", 5)
+
+	-- Store initial high-perf streaming settings
+	currentOptimizationProfile.streamingRadius = Workspace.StreamingTargetRadius
+	currentOptimizationProfile.minStreamingRadius = Workspace.StreamingMinRadius
+	currentOptimizationProfile.shadowsEnabled = Lighting.GlobalShadows -- Simpan state awal shadow
+
+	while scriptInitialized do
+		local success, _ = safeCall(function() -- Bungkus logic utama loop
+			local currentMetrics = updatePerformanceMetrics()
+			local avgFps, avgRender, avgPhysics, avgLua, avgInstance = getAveragePerformance()
+			local bottleneck, targetLevel = identifyBottleneck(avgFps, avgRender, avgPhysics, avgLua, avgInstance)
+			local appliedLevel = runOptimizations(targetLevel, bottleneck, currentOptimizationProfile)
+
+			-- Adjust check interval
+			local waitTime = CHECK_INTERVAL
+			if appliedLevel == 0 and avgFps >= TARGET_FPS * 0.95 then -- Sedikit toleransi
+				waitTime = RECOVERY_CHECK_INTERVAL
+			end
+			task.wait(waitTime)
+		end)
+
+		if not success then
+			-- Error sudah dicatat oleh safeCall, tunggu sebelum mencoba lagi
+			task.wait(RECOVERY_CHECK_INTERVAL * 2)
+		end
+        -- Tambahan: Periksa apakah skrip masih valid untuk berjalan
+        if not player or not player.Parent then scriptInitialized = false; warn("AntiLag: Player left, stopping.") end
+	end
+end)
