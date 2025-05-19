@@ -5,7 +5,7 @@ local RunService = game:GetService("RunService")
 local Player = Players.LocalPlayer
 
 -- Constants
-local FLING_DURATION = 0.6 -- Sedikit dikurangi untuk efisiensi, bisa disesuaikan
+local FLING_DURATION = 0.7
 local MAX_VELOCITY = 9e9
 
 -- Variables for Fling Aura
@@ -39,7 +39,7 @@ ScreenGui.Name = "FlingGUI"
 ScreenGui.Parent = Player:WaitForChild("PlayerGui")
 ScreenGui.ResetOnSpawn = false
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-ScreenGui.Enabled = true
+ScreenGui.Enabled = true -- Selalu enabled karena GUI selalu terlihat
 
 MainFrame.Name = "MainFrame"
 MainFrame.Parent = ScreenGui
@@ -48,7 +48,7 @@ MainFrame.Position = UDim2.new(0.5, -175, 0.5, -225)
 MainFrame.Size = UDim2.new(0, 350, 0, 450)
 MainFrame.Active = true
 MainFrame.Draggable = true
-MainFrame.Visible = true
+MainFrame.Visible = true -- Selalu terlihat
 
 UICorner.Parent = MainFrame
 UICorner.CornerRadius = UDim.new(0, 8)
@@ -88,6 +88,7 @@ PlayerList.ScrollingEnabled = true
 local playerListCorner = Instance.new("UICorner")
 playerListCorner.CornerRadius = UDim.new(0, 6)
 playerListCorner.Parent = PlayerList
+
 UIListLayout.Parent = PlayerList
 UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
 UIListLayout.Padding = UDim.new(0, 2)
@@ -190,6 +191,7 @@ end
 
 local function UpdatePlayerList(searchText)
     searchText = searchText or ""
+    -- Clear existing player buttons
     for _, child in ipairs(PlayerList:GetChildren()) do
         if child:IsA("TextButton") then
             child:Destroy()
@@ -198,20 +200,22 @@ local function UpdatePlayerList(searchText)
 
     local playersToShow = {}
     for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= Player then
-            if searchText == "" or 
-               p.Name:lower():match(searchText:lower()) or 
-               p.DisplayName:lower():match(searchText:lower()) then
+        if p ~= Player then -- Exclude local player
+            if searchText == "" or p.Name:lower():match(searchText:lower()) or p.DisplayName:lower():match(searchText:lower()) then
                 table.insert(playersToShow, p)
             end
         end
     end
 
-    table.sort(playersToShow, function(a,b) return a.DisplayName:lower() < b.DisplayName:lower() end)
+    -- Sort players by display name
+    table.sort(playersToShow, function(a,b)
+        return a.DisplayName:lower() < b.DisplayName:lower()
+    end)
 
+    -- Create buttons for sorted players
     for _, p in ipairs(playersToShow) do
         local playerButton = Instance.new("TextButton")
-        playerButton.Size = UDim2.new(1, -8, 0, 25)
+        playerButton.Size = UDim2.new(1, -8, 0, 25) -- Slightly smaller to account for padding/scrollbar
         playerButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
         playerButton.Text = p.DisplayName .. " (@" .. p.Name .. ")"
         playerButton.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -224,24 +228,24 @@ local function UpdatePlayerList(searchText)
         btnCorner.Parent = playerButton
 
         playerButton.MouseButton1Click:Connect(function()
-            SearchBox.Text = p.Name
+            SearchBox.Text = p.Name -- Set SearchBox text to the actual username for GetPlayer
         end)
     end
     PlayerList.CanvasSize = UDim2.new(0, 0, 0, UIListLayout.AbsoluteContentSize.Y)
 end
 
-
--- FlingPlayer Function (REVISED FOR ROBUSTNESS AND MOVING TARGETS)
+-- FlingPlayer Function (REVISED FOR ROBUSTNESS AND BETTER FEEDBACK)
 local function FlingPlayer(targetPlayer, isFromAura)
     isFromAura = isFromAura or false
-
     local localPlayerCharacterAtStart = Player.Character
     local localHumanoidAtStart = localPlayerCharacterAtStart and localPlayerCharacterAtStart:FindFirstChildOfClass("Humanoid")
     local localRootPartAtStart = localHumanoidAtStart and localHumanoidAtStart.RootPart
 
-    if not (localPlayerCharacterAtStart and localHumanoidAtStart and localRootPartAtStart) then
-        if not isFromAura then ShowStatus("Your character is missing or incomplete. Cannot initiate fling.", Color3.fromRGB(255, 50, 50), 3) end
-        return false
+    if not (localPlayerCharacterAtStart and localHumanoidAtStart and localRootPartAtStart and localHumanoidAtStart.Health > 0) then
+        if not isFromAura then
+            ShowStatus("Your character is missing, incomplete, or dead. Cannot initiate fling.", Color3.fromRGB(255, 50, 50), 3)
+        end
+        return false, "Local character missing/dead"
     end
 
     local targetCharacter = targetPlayer.Character
@@ -249,42 +253,39 @@ local function FlingPlayer(targetPlayer, isFromAura)
     local targetRootPart = targetHumanoid and targetHumanoid.RootPart
 
     if not (targetCharacter and targetHumanoid and targetRootPart) then
-        if not isFromAura then ShowStatus(targetPlayer.DisplayName .. "'s character is missing. Cannot fling.", Color3.fromRGB(255, 100, 0), 3) end
-        return false
+        if not isFromAura then
+            ShowStatus(targetPlayer.DisplayName .. "'s character is missing. Cannot fling.", Color3.fromRGB(255, 100, 0), 3)
+        end
+        return false, targetPlayer.DisplayName .. " character missing"
+    end
+
+    if targetHumanoid.Health <= 0 then
+        if not isFromAura then
+            ShowStatus(targetPlayer.DisplayName .. " is dead! Skipping.", Color3.fromRGB(255, 150, 50), 2)
+        end
+        return false, targetPlayer.DisplayName .. " is dead"
     end
 
     if targetHumanoid.Sit then
-        if not isFromAura then ShowStatus(targetPlayer.DisplayName .. " is sitting! Skipping.", Color3.fromRGB(255, 150, 50), 2) end
-        return false
+        if not isFromAura then
+            ShowStatus(targetPlayer.DisplayName .. " is sitting! Skipping.", Color3.fromRGB(255, 150, 50), 2)
+        end
+        return false, targetPlayer.DisplayName .. " is sitting"
     end
 
     local originalLocalPos = localRootPartAtStart.CFrame
     local originalCameraSubject = workspace.CurrentCamera.CameraSubject
     local bodyVelocity
-
-    -- Store original target states to restore later
-    local originalTargetPlatformStand = targetHumanoid.PlatformStand
-    local originalTargetWalkSpeed = targetHumanoid.WalkSpeed
-    local originalTargetJumpPower = targetHumanoid.JumpPower
-    local originalTargetStateType = targetHumanoid:GetState()
-
     local flingActuallyHappened = false
+    local flingErrorMessage = "Unknown error during fling execution"
 
     local success, err = pcall(function()
-        -- Attempt to make target more susceptible
-        targetHumanoid.PlatformStand = false
-        targetHumanoid.WalkSpeed = 0
-        targetHumanoid.JumpPower = 0
-        targetHumanoid:ChangeState(Enum.HumanoidStateType.Physics) -- More susceptible to physics
-        task.wait() -- Allow state change to propagate
-
         workspace.CurrentCamera.CameraSubject = targetRootPart
-
         bodyVelocity = Instance.new("BodyVelocity")
         bodyVelocity.Name = "FlingVelocity"
         bodyVelocity.Velocity = Vector3.new(MAX_VELOCITY, MAX_VELOCITY, MAX_VELOCITY)
         bodyVelocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
-        bodyVelocity.P = 1250 -- Default P value, can be tuned if needed
+        bodyVelocity.P = 1250 -- Default Power, can be tuned
         bodyVelocity.Parent = localRootPartAtStart
 
         localHumanoidAtStart:SetStateEnabled(Enum.HumanoidStateType.Seated, false)
@@ -295,44 +296,39 @@ local function FlingPlayer(targetPlayer, isFromAura)
         while tick() - startTime < FLING_DURATION do
             local currentLocalPlayerCharacter = Player.Character
             local currentLocalRootPart = currentLocalPlayerCharacter and currentLocalPlayerCharacter:FindFirstChild("HumanoidRootPart")
-            if not (currentLocalRootPart and currentLocalRootPart == localRootPartAtStart) then
+            if not (currentLocalRootPart and currentLocalRootPart == localRootPartAtStart and currentLocalRootPart.Parent) then
                 error("Local player character changed/lost during fling operation.")
             end
-
-            if not (targetRootPart and targetRootPart.Parent and targetCharacter and targetCharacter.Parent == workspace and targetHumanoid and targetHumanoid.Parent) then
-                error("Target character lost during fling operation.")
+            if not (Player.Character and Player.Character:FindFirstChildOfClass("Humanoid") and Player.Character:FindFirstChildOfClass("Humanoid").Health > 0) then
+                error("Local player died during fling operation.")
             end
-            
-            -- Ensure target remains in a flingable state (optional, can be aggressive)
-            if targetHumanoid:GetState() ~= Enum.HumanoidStateType.Physics and targetHumanoid:GetState() ~= Enum.HumanoidStateType.FallingDown then
-                 targetHumanoid:ChangeState(Enum.HumanoidStateType.Physics)
+
+            if not (targetRootPart and targetRootPart.Parent and targetCharacter and targetCharacter.Parent == workspace and targetPlayer and targetPlayer.Parent) then
+                error("Target character or player lost during fling operation.")
+            end
+            if not (targetHumanoid and targetHumanoid.Parent and targetHumanoid.Health > 0) then
+                 error("Target died or humanoid lost during fling operation.")
             end
 
             angle = angle + 120
-            for _, offset in ipairs({ CFrame.new(0,1.5,0), CFrame.new(0,-1.5,0), CFrame.new(2.25,1.5,-2.25), CFrame.new(-2.25,-1.5,2.25) }) do
-                if not (targetRootPart and targetRootPart.Parent and currentLocalRootPart and currentLocalRootPart.Parent) then break end
-                
+            for _, offset in ipairs({
+                CFrame.new(0, 1.5, 0), CFrame.new(0, -1.5, 0),
+                CFrame.new(2.25, 1.5, -2.25), CFrame.new(-2.25, -1.5, 2.25)
+            }) do
+                if not (targetRootPart and targetRootPart.Parent and currentLocalRootPart and currentLocalRootPart.Parent) then
+                    break
+                end
                 currentLocalRootPart.CFrame = CFrame.new(targetRootPart.Position) * offset * CFrame.Angles(math.rad(angle),0,0)
                 currentLocalRootPart.Velocity = Vector3.new(MAX_VELOCITY, MAX_VELOCITY, MAX_VELOCITY)
                 currentLocalRootPart.RotVelocity = Vector3.new(MAX_VELOCITY, MAX_VELOCITY, MAX_VELOCITY)
-                task.wait()
+                RunService.Heartbeat:Wait() -- Use Heartbeat for better physics sync
             end
         end
         flingActuallyHappened = true
     end)
 
-    -- Cleanup BodyVelocity
     if bodyVelocity and bodyVelocity.Parent then
         bodyVelocity:Destroy()
-    end
-
-    -- Restore target's original states
-    if targetHumanoid and targetHumanoid.Parent then
-        targetHumanoid:ChangeState(originalTargetStateType) -- Attempt to restore original state
-        task.wait() -- give it a moment
-        targetHumanoid.PlatformStand = originalTargetPlatformStand
-        targetHumanoid.WalkSpeed = originalTargetWalkSpeed
-        targetHumanoid.JumpPower = originalTargetJumpPower
     end
 
     local currentLocalPlayerCharacter = Player.Character
@@ -344,16 +340,14 @@ local function FlingPlayer(targetPlayer, isFromAura)
     elseif localHumanoidAtStart and localHumanoidAtStart.Parent then
         localHumanoidAtStart:SetStateEnabled(Enum.HumanoidStateType.Seated, true)
     end
-    
-    if workspace.CurrentCamera then -- Make sure camera still exists
-        if currentLocalHumanoid then
-            workspace.CurrentCamera.CameraSubject = currentLocalHumanoid
-        else
-            workspace.CurrentCamera.CameraSubject = originalCameraSubject
-        end
+
+    if currentLocalHumanoid then
+        workspace.CurrentCamera.CameraSubject = currentLocalHumanoid
+    else
+        workspace.CurrentCamera.CameraSubject = originalCameraSubject
     end
 
-    if currentLocalRootPart and currentLocalHumanoid then
+    if currentLocalRootPart and currentLocalHumanoid and currentLocalHumanoid.Health > 0 then
         currentLocalRootPart.CFrame = originalLocalPos
         currentLocalHumanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
         for _, part in ipairs(currentLocalPlayerCharacter:GetDescendants()) do
@@ -363,8 +357,8 @@ local function FlingPlayer(targetPlayer, isFromAura)
             end
         end
         task.wait(0.05)
-        
         local distToOriginal = (currentLocalRootPart.Position - originalLocalPos.Position).Magnitude
+
         if not isFromAura then
             if success and flingActuallyHappened then
                 if distToOriginal < 15 then
@@ -373,20 +367,21 @@ local function FlingPlayer(targetPlayer, isFromAura)
                     ShowStatus("Fling on " .. targetPlayer.DisplayName .. " done, reset pos diff: " .. string.format("%.1f", distToOriginal) .. " studs.", Color3.fromRGB(255, 165, 0), 3)
                 end
             elseif not success then
-                 ShowStatus("Fling error for " .. targetPlayer.DisplayName .. ": " .. tostring(err), Color3.fromRGB(255, 0, 0), 3.5)
+                flingErrorMessage = tostring(err)
+                ShowStatus("Fling error for " .. targetPlayer.DisplayName .. ": " .. flingErrorMessage, Color3.fromRGB(255, 0, 0), 3.5)
             else
-                 ShowStatus("Fling attempt for " .. targetPlayer.DisplayName .. " finished, but core fling might not have run.", Color3.fromRGB(255,100,0), 3)
+                flingErrorMessage = "Core fling logic did not complete successfully."
+                ShowStatus("Fling attempt for " .. targetPlayer.DisplayName .. " finished, but core fling might not have run as expected.", Color3.fromRGB(255,100,0), 3)
             end
         end
-        return success and flingActuallyHappened and distToOriginal < 15
+        return success and flingActuallyHappened and distToOriginal < 15, flingErrorMessage
     else
         if not isFromAura then
-            ShowStatus("Fling for " .. targetPlayer.DisplayName .. " attempted, but your character is missing post-operation.", Color3.fromRGB(255, 0, 0), 3)
+            ShowStatus("Fling for " .. targetPlayer.DisplayName .. " attempted, but your character is missing or dead post-operation.", Color3.fromRGB(255, 0, 0), 3)
         end
-        return false
+        return false, "Local character missing/dead post-operation"
     end
 end
-
 
 -- Event Connections for SearchBox with Debounce
 SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
@@ -395,7 +390,7 @@ SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
         searchDebounceThread = nil
     end
     searchDebounceThread = task.delay(searchDebounceTime, function()
-        if SearchBox then
+        if SearchBox then -- Pastikan SearchBox masih ada
             UpdatePlayerList(SearchBox.Text)
         end
         searchDebounceThread = nil
@@ -417,53 +412,45 @@ FlingPlayerButton.MouseButton1Click:Connect(function()
     end
 end)
 
+-- REVISED FlingAllPlayersButton Logic
 FlingAllPlayersButton.MouseButton1Click:Connect(function()
     local otherPlayersToFling = {}
     for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= Player then table.insert(otherPlayersToFling, p) end
+        if p ~= Player and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then -- Ensure character exists
+            table.insert(otherPlayersToFling, p)
+        end
     end
+
     if #otherPlayersToFling == 0 then
-        ShowStatus("No other players to fling.", Color3.fromRGB(255, 150, 0))
+        ShowStatus("No other players (with characters) to fling.", Color3.fromRGB(255, 150, 0), 3)
         return
     end
-    ShowStatus("Starting Fling All for " .. #otherPlayersToFling .. " players...", Color3.fromRGB(0, 150, 255))
+
+    ShowStatus("Starting Fling All for " .. #otherPlayersToFling .. " players...", Color3.fromRGB(0, 150, 255), 3)
+
     task.spawn(function()
         local flingCount = 0
+        local failedFlingDetails = {}
+        local totalPlayers = #otherPlayersToFling
+
         for i, pTarget in ipairs(otherPlayersToFling) do
-            -- Double check target validity and local player character before each attempt
-            if not (pTarget and pTarget.Parent and pTarget:IsA("Player")) then 
-                ShowStatus("Skipping invalid target in Fling All.", Color3.fromRGB(255,150,0), 2)
-                continue 
+            -- Pengecekan #1: Validitas Pemain Lokal sebelum setiap fling
+            local localChar = Player.Character
+            local localRoot = localChar and localChar:FindFirstChild("HumanoidRootPart")
+            local localHumanoid = localChar and localChar:FindFirstChildOfClass("Humanoid")
+
+            if not (localChar and localRoot and localHumanoid and localHumanoid.Health > 0) then
+                ShowStatus("LocalPlayer character lost or died. Aborting Fling All.", Color3.fromRGB(255, 50, 50), 4)
+                break -- Hentikan seluruh operasi Fling All
             end
-            if not (Player.Character and Player.Character:FindFirstChild("HumanoidRootPart") and Player.Character:FindFirstChildOfClass("Humanoid")) then
-                ShowStatus("LocalPlayer character lost. Aborting Fling All.", Color3.fromRGB(255,50,50))
-                break
-            end
 
-            ShowStatus("Flinging " .. pTarget.DisplayName .. " (" .. i .. "/" .. #otherPlayersToFling .. ")...", Color3.fromRGB(255,255,100), FLING_DURATION + 0.4)
-            local success = FlingPlayer(pTarget, false)
-            if success then flingCount += 1 end
-            
-            -- Increased and slightly more robust delay between flings
-            -- This gives physics and server some time to process each fling
-            task.wait(FLING_DURATION * 0.3 + 0.3) 
-        end
-
-        if Player.Character and Player.Character:FindFirstChild("HumanoidRootPart") then
-            ShowStatus("Fling All complete. Flung " .. flingCount .. " of " .. #otherPlayersToFling .. " players.", Color3.fromRGB(60,255,60))
-        else
-            ShowStatus("Fling All finished, but local character was lost. Flung: " .. flingCount .. "/" .. #otherPlayersToFling, Color3.fromRGB(255,100,0))
-        end
-    end)
-end)
-
-AuraRangeInput.FocusLost:Connect(function(enterPressed)
-    if enterPressed then
-        local newRange = tonumber(AuraRangeInput.Text)
-        if newRange and newRange > 0 and newRange < 500 then
-            auraRange = newRange
-            AuraRangeInput.Text = tostring(auraRange)
-            ShowStatus("Aura range set to " .. auraRange .. " studs.", Color3.fromRGB(100,255,100))
-        else
-            ShowStatus("Invalid aura range (1-499).", Color3.fromRGB(255,50,50))
-            AuraRangeInput.Text = tostring(auraRange
+            -- Pengecekan #2: Validitas Pemain Target sebelum setiap fling
+            if not (pTarget and pTarget.Parent and pTarget.Character and pTarget.Character:FindFirstChild("HumanoidRootPart") and pTarget.Character:FindFirstChildOfClass("Humanoid") and pTarget.Character:FindFirstChildOfClass("Humanoid").Health > 0) then
+                local skipReason = "character missing, dead, or player left"
+                if pTarget and pTarget.Character and pTarget.Character:FindFirstChildOfClass("Humanoid") and pTarget.Character:FindFirstChildOfClass("Humanoid").Health <= 0 then
+                    skipReason = "is dead"
+                elseif not (pTarget and pTarget.Parent) then
+                    skipReason = "has left the game"
+                end
+                ShowStatus("Skipping " .. (pTarget and pTarget.Name or "Unknown Player") .. " (" .. skipReason .. ").", Color3.fromRGB(255,150,0), 2)
+                table.insert(failedFlingDetails, {name = (pTarget and pTarget.Name or "Unknown Player"), reason = skipReason .. " pre-fling"
