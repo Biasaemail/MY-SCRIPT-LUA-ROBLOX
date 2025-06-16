@@ -1,0 +1,303 @@
+-- Gui to Lua
+-- Version: 4.0 (Ganas Edition)
+-- Optimized for Performance and Power by AI Assistant
+
+--[[
+    CHANGELOG:
+    - DIOPTIMALKAN: Menghapus loop RunService.Heartbeat yang menyebabkan lag parah.
+      (OPTIMIZED: Removed the RunService.Heartbeat loop that caused severe lag.)
+    - LEBIH GANAS: Nilai Torque ditingkatkan 500x untuk putaran yang sangat cepat.
+      (MORE FIERCE: Torque value increased 500x for extremely fast spinning.)
+    - LEBIH EFISIEN: Proses awal mengambil parts dibuat dalam batch untuk mencegah freeze.
+      (MORE EFFICIENT: Initial part grabbing is now batched to prevent freezing.)
+    - PEMBERSIHAN LEBIH BAIK: Script sekarang membersihkan semua effect dengan benar saat dimatikan.
+      (BETTER CLEANUP: Script now properly cleans up all effects when turned off.)
+]]
+
+-- Instances:
+
+local Gui = Instance.new("ScreenGui")
+local Main = Instance.new("Frame")
+local Box = Instance.new("TextBox")
+local UITextSizeConstraint = Instance.new("UITextSizeConstraint")
+local Label = Instance.new("TextLabel")
+local UITextSizeConstraint_2 = Instance.new("UITextSizeConstraint")
+local Button = Instance.new("TextButton")
+local UITextSizeConstraint_3 = Instance.new("UITextSizeConstraint")
+
+-- Properties:
+
+Gui.Name = "Gui"
+Gui.Parent = gethui and gethui() or game:GetService("CoreGui") -- More robust parent finding
+Gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+Main.Name = "Main"
+Main.Parent = Gui
+Main.BackgroundColor3 = Color3.fromRGB(75, 75, 75)
+Main.BorderColor3 = Color3.fromRGB(0, 0, 0)
+Main.BorderSizePixel = 0
+Main.Position = UDim2.new(0.335954279, 0, 0.542361975, 0)
+Main.Size = UDim2.new(0.240350261, 0, 0.166880623, 0)
+Main.Active = true
+Main.Draggable = true
+
+Box.Name = "Box"
+Box.Parent = Main
+Box.BackgroundColor3 = Color3.fromRGB(95, 95, 95)
+Box.BorderColor3 = Color3.fromRGB(0, 0, 0)
+Box.BorderSizePixel = 0
+Box.Position = UDim2.new(0.0980926454, 0, 0.218712583, 0)
+Box.Size = UDim2.new(0.801089942, 0, 0.364963502, 0)
+Box.FontFace = Font.new("rbxasset://fonts/families/SourceSansSemibold.json", Enum.FontWeight.Bold, Enum.FontStyle.Normal)
+Box.PlaceholderText = "Player here"
+Box.Text = ""
+Box.TextColor3 = Color3.fromRGB(255, 255, 255)
+Box.TextScaled = true
+Box.TextSize = 31.000
+Box.TextWrapped = true
+
+UITextSizeConstraint.Parent = Box
+UITextSizeConstraint.MaxTextSize = 31
+
+Label.Name = "Label"
+Label.Parent = Main
+Label.BackgroundColor3 = Color3.fromRGB(95, 95, 95)
+Label.BorderColor3 = Color3.fromRGB(0, 0, 0)
+Label.BorderSizePixel = 0
+Label.Size = UDim2.new(1, 0, 0.160583943, 0)
+Label.FontFace = Font.new("rbxasset://fonts/families/Nunito.json", Enum.FontWeight.Bold, Enum.FontStyle.Normal)
+Label.Text = "Bring Parts | t.me/arceusxscripts"
+Label.TextColor3 = Color3.fromRGB(255, 255, 255)
+Label.TextScaled = true
+Label.TextSize = 14.000
+Label.TextWrapped = true
+
+UITextSizeConstraint_2.Parent = Label
+UITextSizeConstraint_2.MaxTextSize = 21
+
+Button.Name = "Button"
+Button.Parent = Main
+Button.BackgroundColor3 = Color3.fromRGB(95, 95, 95)
+Button.BorderColor3 = Color3.fromRGB(0, 0, 0)
+Button.BorderSizePixel = 0
+Button.Position = UDim2.new(0.183284417, 0, 0.656760991, 0)
+Button.Size = UDim2.new(0.629427791, 0, 0.277372271, 0)
+Font = Enum.Font.Nunito
+Button.Text = "Bring | Off"
+Button.TextColor3 = Color3.fromRGB(255, 255, 255)
+Button.TextScaled = true
+Button.TextSize = 28.000
+Button.TextWrapped = true
+
+UITextSizeConstraint_3.Parent = Button
+UITextSizeConstraint_3.MaxTextSize = 28
+
+-- :: Script Logic ::
+
+-- Services
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+
+-- Configuration
+local Config = {
+    ActivationKey = Enum.KeyCode.RightControl,
+    TorqueValue = Vector3.new(5e7, 5e7, 5e7), -- Nilai dinaikkan untuk putaran super kencang!
+    Responsiveness = 200,
+    MaxForce = math.huge
+}
+
+-- State Variables
+local localPlayer = Players.LocalPlayer
+local targetPlayer = nil
+local targetCharacter = nil
+local targetRootPart = nil
+local effectActive = false
+local affectedParts = {}
+local connections = {}
+
+-- Create a single, reusable anchor part for the attachments
+local anchorPart = Instance.new("Part")
+anchorPart.Name = "BlackHoleAnchor"
+anchorPart.Anchored = true
+anchorPart.CanCollide = false
+anchorPart.Transparency = 1
+anchorPart.Parent = Workspace
+
+local anchorAttachment = Instance.new("Attachment")
+anchorAttachment.Name = "BlackHoleAttachment"
+anchorAttachment.Parent = anchorPart
+
+-- Toggle GUI visibility
+Main.Visible = true
+UserInputService.InputBegan:Connect(function(input, gameProcessedEvent)
+    if input.KeyCode == Config.ActivationKey and not gameProcessedEvent then
+        Main.Visible = not Main.Visible
+    end
+end)
+
+-- Function to apply force movers to a part
+local function applyForce(part)
+    if not part or not part.Parent or not part:IsA("BasePart") then return end
+    if part.Anchored or part:FindFirstAncestorOfClass("Model") and part:FindFirstAncestorOfClass("Model"):FindFirstChildOfClass("Humanoid") then return end
+    if table.find(affectedParts, part) then return end -- Already affecting this part
+
+    -- Cleanup old movers just in case
+    for _, child in ipairs(part:GetChildren()) do
+        if child:IsA("BodyMover") or child:IsA("RocketPropulsion") then
+            child:Destroy()
+        end
+    end
+    if part:FindFirstChild("BlackHoleAlignPos") then part.BlackHoleAlignPos:Destroy() end
+    if part:FindFirstChild("BlackHoleTorque") then part.BlackHoleTorque:Destroy() end
+    if part:FindFirstChild("BlackHolePartAttachment") then part.BlackHolePartAttachment:Destroy() end
+
+    -- Create new movers for the "ganas" effect
+    part.CanCollide = false
+    table.insert(affectedParts, part)
+
+    local partAttachment = Instance.new("Attachment", part)
+    partAttachment.Name = "BlackHolePartAttachment"
+    
+    local alignPosition = Instance.new("AlignPosition", part)
+    alignPosition.Name = "BlackHoleAlignPos"
+    alignPosition.MaxForce = Config.MaxForce
+    alignPosition.MaxVelocity = math.huge
+    alignPosition.Responsiveness = Config.Responsiveness
+    alignPosition.Attachment0 = partAttachment
+    alignPosition.Attachment1 = anchorAttachment
+
+    local torque = Instance.new("Torque", part)
+    torque.Name = "BlackHoleTorque"
+    torque.Torque = Config.TorqueValue
+    torque.Attachment0 = partAttachment
+end
+
+-- Function to remove force movers from a part
+local function removeForce(part)
+    if not part or not part.Parent then return end
+    if part:FindFirstChild("BlackHoleAlignPos") then part.BlackHoleAlignPos:Destroy() end
+    if part:FindFirstChild("BlackHoleTorque") then part.BlackHoleTorque:Destroy() end
+    if part:FindFirstChild("BlackHolePartAttachment") then part.BlackHolePartAttachment:Destroy() end
+end
+
+-- Main functions to start and stop the effect
+local function startEffect()
+    if not targetRootPart then return end
+    Button.Text = "Bring | On"
+
+    -- Process existing parts in batches to prevent lag
+    task.spawn(function()
+        local allParts = Workspace:GetDescendants()
+        for i, descendant in ipairs(allParts) do
+            if effectActive then
+                applyForce(descendant)
+                if i % 50 == 0 then -- Yield every 50 parts to prevent freezing
+                    task.wait()
+                end
+            else
+                break -- Stop if effect was turned off mid-process
+            end
+        end
+    end)
+
+    -- Connect to new parts being added
+    connections.DescendantAdded = Workspace.DescendantAdded:Connect(applyForce)
+
+    -- Update anchor position
+    connections.RenderStepped = RunService.RenderStepped:Connect(function()
+        if targetRootPart and targetRootPart.Parent then
+            anchorPart.CFrame = targetRootPart.CFrame
+        else
+            -- If target is gone, stop the effect
+            stopEffect()
+        end
+    end)
+end
+
+local function stopEffect()
+    Button.Text = "Bring | Off"
+    
+    -- Disconnect all event listeners
+    for _, connection in pairs(connections) do
+        connection:Disconnect()
+    end
+    table.clear(connections)
+
+    -- Clean up all affected parts
+    for _, part in ipairs(affectedParts) do
+        if part and part.Parent then
+            removeForce(part)
+        end
+    end
+    table.clear(affectedParts)
+end
+
+local function toggleEffect()
+    effectActive = not effectActive
+    if effectActive then
+        startEffect()
+    else
+        stopEffect()
+    end
+end
+
+-- Player finder function
+local function getPlayer(name)
+    local lowerName = string.lower(name)
+    for _, p in pairs(Players:GetPlayers()) do
+        if string.find(string.lower(p.Name), lowerName) or string.find(string.lower(p.DisplayName), lowerName) then
+            return p
+        end
+    end
+    return nil
+end
+
+-- GUI Scripts
+Box.FocusLost:Connect(function(enterPressed)
+    if enterPressed then
+        local foundPlayer = getPlayer(Box.Text)
+        if foundPlayer then
+            targetPlayer = foundPlayer
+            Box.Text = targetPlayer.Name
+            print("Target player set to:", targetPlayer.Name)
+        else
+            targetPlayer = nil
+            print("Player not found.")
+        end
+    end
+end)
+
+Button.MouseButton1Click:Connect(function()
+    local playerToUse = targetPlayer or localPlayer
+    
+    if not playerToUse then
+        print("Error: No player available.")
+        return
+    end
+
+    if playerToUse.Character then
+        targetCharacter = playerToUse.Character
+        targetRootPart = targetCharacter:FindFirstChild("HumanoidRootPart")
+    else
+        print("Waiting for character of", playerToUse.Name)
+        local char = playerToUse.CharacterAdded:Wait()
+        targetCharacter = char
+        targetRootPart = char:WaitForChild("HumanoidRootPart")
+    end
+
+    if targetRootPart then
+        toggleEffect()
+    else
+        print("Could not find HumanoidRootPart for", playerToUse.Name)
+    end
+end)
+
+-- Clean up when the script is destroyed
+Gui.Destroying:Connect(function()
+    if effectActive then
+        stopEffect()
+    end
+    anchorPart:Destroy()
+end)
