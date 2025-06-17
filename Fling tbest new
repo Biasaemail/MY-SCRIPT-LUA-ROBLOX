@@ -337,32 +337,117 @@ local function FlingPlayer(targetPlayer, isFromAura)
                 part.RotVelocity = Vector3.new(0,0,0)
             end
         end
-        task.wait(0.05) 
+-- =====================================================================================
+-- FUNGSI FLINGPLAYER V3 "GOD HAND"
+-- Perbaikan bug "ikut terlempar", lebih cerdas, dan lebih ganas.
+-- =====================================================================================
+local function FlingPlayer_V3_GodHand(targetPlayer, isFromAura)
+    -- Menggunakan task.spawn untuk menjalankan seluruh operasi secara asinkron.
+    -- Ini mencegah GUI Anda 'freeze' sedikit pun.
+    task.spawn(function()
+        isFromAura = isFromAura or false
+
+        -- [Pemeriksaan Awal yang Jauh Lebih Cerdas]
+        local localPlayerCharacter = Player.Character
+        local localRootPart = localPlayerCharacter and localPlayerCharacter:FindFirstChild("HumanoidRootPart")
+        if not localRootPart then
+            if not isFromAura then ShowStatus("Karakter Anda tidak valid.", Color3.fromRGB(255, 50, 50), 3) end
+            return false
+        end
+
+        local targetCharacter = targetPlayer.Character
+        local targetRootPart = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
+        local targetHumanoid = targetCharacter and targetCharacter:FindFirstChildOfClass("Humanoid")
+
+        if not (targetRootPart and targetHumanoid) then
+            if not isFromAura then ShowStatus(targetPlayer.DisplayName .. " tidak memiliki karakter.", Color3.fromRGB(255, 100, 0), 3) end
+            return false
+        end
         
-        local distToOriginal = (currentLocalRootPart.Position - originalLocalPos.Position).Magnitude
+        -- Cek Kesehatan & ForceField (Spawn Protection)
+        if targetHumanoid.Health <= 0 then return end
+        if targetCharacter:FindFirstChildOfClass("ForceField") then
+            if not isFromAura then ShowStatus(targetPlayer.DisplayName .. " memiliki spawn protection.", Color3.fromRGB(255, 150, 50), 2) end
+            return false
+        end
+
+        -- Cek Status Duduk
+        if targetHumanoid:GetState() == Enum.HumanoidStateType.Seated then
+            if not isFromAura then ShowStatus(targetPlayer.DisplayName .. " sedang duduk. Dilewati.", Color3.fromRGB(255, 150, 50), 2) end
+            return false
+        end
+        
+        -- Cek Jarak
+        if (localRootPart.Position - targetRootPart.Position).Magnitude > 150 then
+             if not isFromAura then ShowStatus(targetPlayer.DisplayName .. " terlalu jauh.", Color3.fromRGB(255, 150, 50), 2) end
+             return false
+        end
+
+        local originalLocalPos = localRootPart.CFrame
+        local flingConnection = nil
+
+        -- [Langkah Kunci: Ambil Alih Kontrol Fisika Target]
+        targetRootPart:SetNetworkOwner(Player)
+
+        -- [FASE 1: Kunci & Goyang]
+        local pcallSuccess, pcallError = pcall(function()
+            local startTime = tick()
+            local angle = 0
+            
+            flingConnection = RunService.Heartbeat:Connect(function(dt)
+                if not (targetRootPart and targetRootPart.Parent) then error("Target hilang saat fling.") end
+                angle = angle + (480 * dt) -- Putaran lebih cepat
+                local vortexOffset = CFrame.Angles(math.rad(angle/2), math.rad(angle), 0) * CFrame.new(0, 0, 3)
+                localRootPart.CFrame = targetRootPart.CFrame * vortexOffset
+            end)
+
+            task.wait(FLING_DURATION)
+            flingConnection:Disconnect()
+            flingConnection = nil
+
+            -- [FASE 2: Lepas & Mundur (FIX UNTUK BUG IKUT TERLEMPAR)]
+            -- Lakukan "Full Stop Reset" pada karakter Anda SEBELUM target dilontarkan.
+            localRootPart.Anchored = true -- Hentikan semua fisika pada karakter Anda
+            localRootPart.CFrame = originalLocalPos
+            task.wait() -- Tunggu satu frame agar perubahan posisi dan anchored diterapkan
+            localRootPart.Anchored = false -- Lepaskan kembali
+            localRootPart.Velocity = Vector3.new(0,0,0)
+            localRootPart.RotVelocity = Vector3.new(0,0,0)
+
+            -- Beri jeda sangat singkat untuk memastikan Anda benar-benar sudah aman
+            task.wait(0.1)
+
+            -- [FASE 3: Lontar (Lebih Ganas)]
+            local forceAttachment = Instance.new("Attachment", targetRootPart)
+            
+            -- Buat GAYA DORONG ke atas
+            local flingForce = Instance.new("VectorForce", forceAttachment)
+            flingForce.Force = Vector3.new(0, 75000, 0) -- Lebih kuat dari sebelumnya
+            flingForce.RelativeTo = Enum.ActuatorRelativeTo.World
+            
+            -- Buat GAYA PUTAR yang dahsyat
+            local flingTorque = Instance.new("Torque", forceAttachment)
+            flingTorque.Torque = Vector3.new(9e9, 9e9, 9e9) -- Putaran gila
+
+            -- Biarkan gaya bekerja sesaat, lalu hancurkan semuanya
+            game:GetService("Debris"):AddItem(forceAttachment, 0.3)
+        end)
+        
+        -- [Pembersihan Akhir]
+        if flingConnection then flingConnection:Disconnect() end
+        if targetRootPart and targetRootPart.Parent then targetRootPart:SetNetworkOwner(nil) end
+
+        -- [Pelaporan Status]
         if not isFromAura then
-            if success and flingActuallyHappened then
-                if distToOriginal < 15 then 
-                    ShowStatus("Fling completed on " .. targetPlayer.DisplayName .. "!", Color3.fromRGB(60, 255, 60), 2)
-                else
-                    ShowStatus("Fling on " .. targetPlayer.DisplayName .. " done, reset pos diff: " .. string.format("%.1f", distToOriginal) .. " studs.", Color3.fromRGB(255, 165, 0), 3)
-                end
-            elseif not success then
-                 ShowStatus("Fling error for " .. targetPlayer.DisplayName .. ": " .. tostring(err), Color3.fromRGB(255, 0, 0), 3.5)
-            else 
-                 ShowStatus("Fling attempt for " .. targetPlayer.DisplayName .. " finished, but core fling might not have run.", Color3.fromRGB(255,100,0), 3)
+            if pcallSuccess then
+                ShowStatus("Fling 'God Hand' sukses pada " .. targetPlayer.DisplayName .. "!", Color3.fromRGB(60, 255, 60), 2)
+            else
+                ShowStatus("Fling gagal: " .. tostring(pcallError), Color3.fromRGB(255, 0, 0), 3.5)
             end
         end
-        return success and flingActuallyHappened and distToOriginal < 15
-    else
-        if not isFromAura then
-            ShowStatus("Fling for " .. targetPlayer.DisplayName .. " attempted, but your character is missing post-operation.", Color3.fromRGB(255, 0, 0), 3)
-        end
-        return false
-    end
+        return pcallSuccess
+    end)
 end
-
-
 -- Event Connections for SearchBox with Debounce
 SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
     if searchDebounceThread then
@@ -391,36 +476,51 @@ FlingPlayerButton.MouseButton1Click:Connect(function()
         ShowStatus("Player '" .. targetName .. "' not found!", Color3.fromRGB(255, 50, 50))
     end
 end)
-
 FlingAllPlayersButton.MouseButton1Click:Connect(function()
-    local otherPlayersToFling = {}
+    -- [Tahap 1: Kumpulkan dan Saring Target]
+    local targetsToFling = {}
     for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= Player then table.insert(otherPlayersToFling, p) end
+        if p ~= Player then
+            local char = p.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            -- Langsung saring pemain yang tidak valid atau sedang duduk
+            if hum and hum:GetState() ~= Enum.HumanoidStateType.Seated then
+                table.insert(targetsToFling, p)
+            end
+        end
     end
-    if #otherPlayersToFling == 0 then
-        ShowStatus("No other players to fling.", Color3.fromRGB(255, 150, 0))
+    if #targetsToFling == 0 then
+        ShowStatus("Tidak ada target valid untuk di-fling.", Color3.fromRGB(255, 150, 0))
         return
     end
-    ShowStatus("Starting Fling All for " .. #otherPlayersToFling .. " players...", Color3.fromRGB(0, 150, 255))
+    ShowStatus("Memulai Fling All untuk " .. #targetsToFling .. " target...", Color3.fromRGB(0, 150, 255), 3)
+    -- [Tahap 2: Proses Antrian Satu per Satu]
+    -- Menggunakan task.spawn agar GUI tidak macet selama proses
     task.spawn(function()
-        local flingCount = 0
-        for i, pTarget in ipairs(otherPlayersToFling) do
-            if not (pTarget and pTarget.Parent) then continue end
+        local successCount = 0
+        local totalTargets = #targetsToFling
+        for i, target in ipairs(targetsToFling) do
+            -- Periksa ulang kondisi Anda dan target sebelum setiap fling
             if not (Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")) then
-                ShowStatus("LocalPlayer character lost. Aborting Fling All.", Color3.fromRGB(255,50,50))
+                ShowStatus("Karakter Anda hilang. Fling All dibatalkan.", Color3.fromRGB(255,50,50))
                 break
             end
-            ShowStatus("Flinging " .. pTarget.DisplayName .. " (" .. i .. "/" .. #otherPlayersToFling .. ")...", Color3.fromRGB(255,255,100), FLING_DURATION + 0.2)
-            local success = FlingPlayer(pTarget, false)
-            if success then flingCount += 1 end
-            task.wait(0.1) 
+            if not (target.Parent and target.Character and target.Character:FindFirstChild("HumanoidRootPart")) then
+                ShowStatus(target.DisplayName .. " tidak valid. Dilewati.", Color3.fromRGB(255,150,0), 2)
+                continue -- Lanjut ke target berikutnya
+            end
+            ShowStatus("Flinging " .. target.DisplayName .. " (" .. i .. "/" .. totalTargets .. ")...", Color3.fromRGB(255,255,100), FLING_DURATION + 0.5)
+            -- Panggil fungsi FlingPlayer dan tunggu hasilnya
+            local flingSuccess = FlingPlayer(target, false)
+
+            if flingSuccess then
+                successCount = successCount + 1
+            end
+            task.wait(0.5) -- Beri jeda antar fling agar lebih stabil
         end
-        if Player.Character and Player.Character:FindFirstChild("HumanoidRootPart") then 
-            ShowStatus("Fling All complete. Flung " .. flingCount .. " of " .. #otherPlayersToFling .. " players.", Color3.fromRGB(60,255,60))
-        end
+        ShowStatus("Fling All Selesai. Sukses: " .. successCount .. "/" .. totalTargets .. ".", Color3.fromRGB(60,255,60), 5)
     end)
 end)
-
 AuraRangeInput.FocusLost:Connect(function(enterPressed)
     if enterPressed then
         local newRange = tonumber(AuraRangeInput.Text)
