@@ -1,0 +1,283 @@
+-- Enhanced Silent Aimbot Configuration
+local CONFIG = {
+    FOV = 120, -- Field of View dalam pixel
+    AIM_SPEED = 0.7, -- Kecepatan aim (0.1 = lambat, 1 = instan)
+    MAX_TARGET_DISTANCE = 5000000000, -- Maksimal jarak target dalam studs
+    PREDICTION_STRENGTH = 0.1, -- Prediksi gerakan target (0-1)
+    
+    -- FOV Circle Settings (Invisible)
+    FOV_VISIBLE = false, -- Set false untuk invisible
+    FOV_TRANSPARENCY = 1, -- 1 = completely invisible
+    
+    -- Target Priority Settings
+    PRIORITIZE_CLOSEST = true, -- true = target terdekat, false = target di tengah FOV
+    HEAD_OFFSET = Vector3.new(0, 0.2, 0), -- Offset untuk aim ke kepala
+    
+    -- Smoothing Settings
+    SMOOTH_FACTOR = 0.2, -- Faktor smoothing untuk gerakan natural
+    MIN_AIM_DISTANCE = 5, -- Minimum jarak untuk mulai aim
+}
+
+-- Services
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+-- Variables
+local FOVCircle = nil
+local currentTarget = nil
+local targetHistory = {}
+local isAiming = false
+local connections = {}
+
+-- Initialize FOV Circle (Invisible)
+local function initializeFOV()
+    if Drawing then
+        FOVCircle = Drawing.new("Circle")
+        FOVCircle.Visible = CONFIG.FOV_VISIBLE
+        FOVCircle.Thickness = 1
+        FOVCircle.Color = Color3.fromRGB(255, 255, 255)
+        FOVCircle.Filled = false
+        FOVCircle.Transparency = CONFIG.FOV_TRANSPARENCY
+        FOVCircle.Radius = CONFIG.FOV
+        FOVCircle.Position = Camera.ViewportSize / 2
+    end
+end
+
+-- Enhanced team checking
+local function hasTeams()
+    return LocalPlayer.Team ~= nil
+end
+
+-- Improved target validation with health and state checks
+local function isValidTarget(player)
+    if not player or player == LocalPlayer then return false end
+    if not player.Character then return false end
+    
+    local character = player.Character
+    local head = character:FindFirstChild("Head")
+    local humanoid = character:FindFirstChild("Humanoid")
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    
+    if not head or not humanoid or not rootPart then return false end
+    
+    -- Check if player is alive
+    if humanoid.Health <= 0 then return false end
+    
+    -- Check if player is not in a special state
+    if humanoid:GetState() == Enum.HumanoidStateType.Dead then return false end
+    
+    -- Team check - only target enemies
+    if hasTeams() and player.Team == LocalPlayer.Team then return false end
+    
+    -- Distance check
+    local localRootPart = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if localRootPart then
+        local distance = (rootPart.Position - localRootPart.Position).Magnitude
+        if distance > CONFIG.MAX_TARGET_DISTANCE then return false end
+        if distance < CONFIG.MIN_AIM_DISTANCE then return false end
+    end
+    
+    return true
+end
+
+-- Advanced target prediction based on velocity
+local function predictTargetPosition(target)
+    if not target or not target.Character then return nil end
+    
+    local head = target.Character:FindFirstChild("Head")
+    local rootPart = target.Character:FindFirstChild("HumanoidRootPart")
+    local humanoid = target.Character:FindFirstChild("Humanoid")
+    
+    if not head or not rootPart or not humanoid then return nil end
+    
+    local currentPosition = head.Position + CONFIG.HEAD_OFFSET
+    
+    -- Get target velocity
+    local velocity = rootPart.AssemblyLinearVelocity or Vector3.new(0, 0, 0)
+    
+    -- Predict future position based on velocity and ping
+    local ping = game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue() / 1000
+    local predictionTime = ping + (CONFIG.PREDICTION_STRENGTH * 0.1)
+    
+    local predictedPosition = currentPosition + (velocity * predictionTime)
+    
+    return predictedPosition
+end
+
+-- Enhanced target selection with multiple criteria
+local function getBestTarget()
+    local bestTarget = nil
+    local bestScore = math.huge
+    local screenCenter = Camera.ViewportSize / 2
+    local localPosition = LocalPlayer.Character and LocalPlayer.Character.PrimaryPart and LocalPlayer.Character.PrimaryPart.Position or Vector3.new(0, 0, 0)
+    
+    for _, player in ipairs(Players:GetPlayers()) do
+        if isValidTarget(player) then
+            local head = player.Character.Head
+            local rootPart = player.Character.HumanoidRootPart
+            
+            -- Get screen position
+            local headScreenPos, onScreen = Camera:WorldToViewportPoint(head.Position)
+            
+            if onScreen and headScreenPos.Z > 0 then
+                local screenDistance = (Vector2.new(headScreenPos.X, headScreenPos.Y) - screenCenter).Magnitude
+                local worldDistance = (rootPart.Position - localPosition).Magnitude
+                
+                -- Check if target is within FOV
+                if screenDistance <= CONFIG.FOV then
+                    local score
+                    
+                    if CONFIG.PRIORITIZE_CLOSEST then
+                        -- Score based on world distance (closer = better)
+                        score = worldDistance + (screenDistance * 0.1)
+                    else
+                        -- Score based on screen distance (center of screen = better)
+                        score = screenDistance + (worldDistance * 0.001)
+                    end
+                    
+                    -- Bonus for target consistency (reduce target switching)
+                    if currentTarget == player then
+                        score = score * 0.8
+                    end
+                    
+                    if score < bestScore then
+                        bestScore = score
+                        bestTarget = player
+                    end
+                end
+            end
+        end
+    end
+    
+    return bestTarget
+end
+
+-- Smooth and natural aiming function
+local function smoothAim(target)
+    if not target or not target.Character then return end
+    
+    local predictedPosition = predictTargetPosition(target)
+    if not predictedPosition then return end
+    
+    local currentCFrame = Camera.CFrame
+    local targetCFrame = CFrame.lookAt(currentCFrame.Position, predictedPosition)
+    
+    -- Calculate smooth interpolation
+    local lerpAlpha = CONFIG.AIM_SPEED * CONFIG.SMOOTH_FACTOR
+    
+    -- Use slerp for smoother rotation
+    local newCFrame = currentCFrame:Lerp(targetCFrame, lerpAlpha)
+    
+    -- Apply the new camera rotation
+    Camera.CFrame = newCFrame
+end
+
+-- Update FOV circle position and visibility
+local function updateFOVCircle()
+    if FOVCircle then
+        FOVCircle.Position = Camera.ViewportSize / 2
+        FOVCircle.Radius = CONFIG.FOV
+        FOVCircle.Visible = CONFIG.FOV_VISIBLE
+        FOVCircle.Transparency = CONFIG.FOV_TRANSPARENCY
+    end
+end
+
+-- Main aimbot loop with performance optimization
+local function aimbotLoop()
+    updateFOVCircle()
+    
+    local newTarget = getBestTarget()
+    
+    -- Target switching logic with hysteresis
+    if newTarget ~= currentTarget then
+        currentTarget = newTarget
+        -- Add small delay to prevent rapid target switching
+        if currentTarget then
+            targetHistory[tick()] = currentTarget
+        end
+    end
+    
+    -- Clean old target history
+    local currentTime = tick()
+    for timestamp, _ in pairs(targetHistory) do
+        if currentTime - timestamp > 1 then
+            targetHistory[timestamp] = nil
+        end
+    end
+    
+    -- Aim at current target
+    if currentTarget then
+        smoothAim(currentTarget)
+        isAiming = true
+    else
+        isAiming = false
+    end
+end
+
+-- Cleanup function
+local function cleanup()
+    if FOVCircle then
+        FOVCircle:Remove()
+        FOVCircle = nil
+    end
+    
+    for _, connection in pairs(connections) do
+        connection:Disconnect()
+    end
+    
+    RunService:UnbindFromRenderStep("EnhancedAimbot")
+    currentTarget = nil
+    isAiming = false
+    
+    print("Enhanced Aimbot Disabled")
+end
+
+-- Key input handling
+local function onKeyDown(input)
+    if input.KeyCode == Enum.KeyCode.Delete then
+        cleanup()
+    elseif input.KeyCode == Enum.KeyCode.Insert then
+        -- Toggle FOV visibility for debugging
+        CONFIG.FOV_VISIBLE = not CONFIG.FOV_VISIBLE
+        print("FOV Circle Visibility:", CONFIG.FOV_VISIBLE)
+    end
+end
+
+-- Handle character respawn
+local function onCharacterAdded(character)
+    character:WaitForChild("HumanoidRootPart")
+    currentTarget = nil -- Reset target when respawning
+end
+
+-- Initialize the aimbot
+local function initialize()
+    initializeFOV()
+    
+    -- Connect events
+    connections[#connections + 1] = UserInputService.InputBegan:Connect(onKeyDown)
+    connections[#connections + 1] = LocalPlayer.CharacterAdded:Connect(onCharacterAdded)
+    
+    -- Handle existing character
+    if LocalPlayer.Character then
+        onCharacterAdded(LocalPlayer.Character)
+    end
+    
+    -- Start main loop
+    RunService:BindToRenderStep("EnhancedAimbot", Enum.RenderPriority.Camera.Value, aimbotLoop)
+    
+    print("Enhanced Silent Aimbot Loaded!")
+    print("Controls:")
+    print("- DELETE: Disable aimbot")
+    print("- INSERT: Toggle FOV visibility (for debugging)")
+    print("Settings:")
+    print("- FOV: " .. CONFIG.FOV .. " pixels")
+    print("- Max Distance: " .. CONFIG.MAX_TARGET_DISTANCE .. " studs")
+    print("- Prediction: " .. (CONFIG.PREDICTION_STRENGTH * 100) .. "%")
+end
+
+-- Start the aimbot
+initialize()
