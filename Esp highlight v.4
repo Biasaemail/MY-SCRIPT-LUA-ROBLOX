@@ -1,0 +1,244 @@
+-- LocalScript (Disimpan di StarterPlayerScripts atau sejenisnya)
+
+-- ============== LAYANAN ==============
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Teams = game:GetService("Teams")
+local workspace = game:GetService("Workspace")
+
+-- ============== PEMAIN LOKAL ==============
+local LocalPlayer = Players.LocalPlayer
+local LocalCamera = workspace.CurrentCamera
+
+-- ============== KONFIGURASI CERDAS (v4) ==============
+local HIGHLIGHT_NAME = "PlayerESP_Highlight_v4" -- Nama unik untuk instance Highlight
+
+-- [Warna Dasar]
+local ENEMY_COLOR = Color3.fromRGB(0, 170, 255)       -- Biru untuk musuh
+local TEAM_COLOR = Color3.fromRGB(0, 255, 127)        -- Hijau untuk teman satu tim
+local NEUTRAL_COLOR = Color3.fromRGB(0, 255, 127)     -- Hijau untuk mode netral/FFA
+
+-- [Efek Kesehatan]
+local LOW_HEALTH_DARKEN_FACTOR = 0.2 -- Seberapa gelap warnanya saat darah rendah (0.2 = 20% dari kecerahan asli). Jangan set ke 0.
+
+-- [Fitur Tambahan]
+local ENABLE_LINE_OF_SIGHT_CHECK = true -- true: Highlight berubah jika terhalang.
+local ENABLE_DISTANCE_CULLING = true     -- true: Highlight nonaktif di luar MAX_DISTANCE.
+local ENABLE_DISTANCE_FADING = true      -- true: Highlight memudar saat mendekati MAX_DISTANCE.
+
+-- [Jarak]
+local MAX_DISTANCE = 50000
+local FADE_START_DISTANCE = 250
+
+-- [Penampilan - SAAT TERLIHAT JELAS (Visible)]
+local VISIBLE_OUTLINE_COLOR = Color3.fromRGB(255, 255, 255)
+local VISIBLE_FILL_TRANSPARENCY = 0.6
+local VISIBLE_OUTLINE_TRANSPARENCY = 0.2
+
+-- [Penampilan - SAAT TERHALANG (Occluded)]
+local OCCLUDED_OUTLINE_COLOR = Color3.fromRGB(0, 0, 0)
+local OCCLUDED_FILL_TRANSPARENCY = 0.85
+local OCCLUDED_OUTLINE_TRANSPARENCY = 0
+-- ========================================================
+
+local trackedPlayers = {}
+local playerConnections = {}
+
+local raycastParams = RaycastParams.new()
+raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+
+local function areTeamsActive()
+	-- Sistem tim dianggap aktif jika ada lebih dari satu tim di dalam game.
+	return #Teams:GetTeams() > 1
+end
+
+-- Fungsi menentukan target highlight. Sekarang lebih simpel: highlight semua pemain lain yang valid.
+local function isHighlightTarget(player)
+	if not player or player == LocalPlayer then return false end
+	local character = player.Character
+	if not character then return false end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not humanoid or humanoid:GetState() == Enum.HumanoidStateType.Dead then return false end
+
+	if ENABLE_DISTANCE_CULLING then
+		local rootPart = character:FindFirstChild("HumanoidRootPart")
+		if not rootPart then return false end
+		local distance = (LocalCamera.CFrame.Position - rootPart.Position).Magnitude
+		return distance <= MAX_DISTANCE
+	end
+	
+	return true
+end
+
+-- Fungsi untuk MENGELOLA STATE: menambah/menghapus pemain dari daftar `trackedPlayers`
+local function managePlayerHighlightState(player)
+	local isTarget = isHighlightTarget(player)
+	local isTracked = trackedPlayers[player] ~= nil
+	local character = player.Character
+
+	if isTarget and not isTracked then
+		if not character then return end
+		local humanoid = character:WaitForChild("Humanoid", 2)
+		if not humanoid then return end -- Butuh humanoid untuk cek darah
+		
+		local newHighlight = Instance.new("Highlight")
+		newHighlight.Name = HIGHLIGHT_NAME
+		newHighlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+		newHighlight.Parent = character
+		newHighlight.Adornee = character
+		newHighlight.Enabled = true
+
+		trackedPlayers[player] = {
+			highlight = newHighlight,
+			character = character,
+			humanoid = humanoid,
+			rootPart = character:WaitForChild("HumanoidRootPart", 2),
+		}
+		
+	elseif not isTarget and isTracked then
+		if trackedPlayers[player] and trackedPlayers[player].highlight then
+			trackedPlayers[player].highlight:Destroy()
+		end
+		trackedPlayers[player] = nil
+	end
+end
+
+
+-- Loop utama untuk MEMPERBARUI VISUAL highlight yang aktif
+local function updateTrackedHighlights()
+	if not LocalCamera then LocalCamera = workspace.CurrentCamera; return end
+	local cameraPos = LocalCamera.CFrame.Position
+	raycastParams.FilterDescendantsInstances = {LocalPlayer.Character}
+
+	for player, data in pairs(trackedPlayers) do
+		if not data.humanoid or data.humanoid.Health <= 0 or not data.rootPart or not data.highlight or data.highlight.Parent == nil then
+			managePlayerHighlightState(player) -- Re-evaluasi jika data tidak valid (misal mati)
+			continue
+		end
+
+		-- 1. Tentukan Warna Dasar (Tim, Musuh, atau Netral)
+		local baseColor
+		if areTeamsActive() and LocalPlayer.Team then
+			if player.Team == LocalPlayer.Team then
+				baseColor = TEAM_COLOR
+			else
+				baseColor = ENEMY_COLOR
+			end
+		else
+			baseColor = NEUTRAL_COLOR
+		end
+		
+		-- 2. Kalkulasi Warna Berdasarkan Kesehatan
+		local healthPercent = data.humanoid.Health / data.humanoid.MaxHealth
+		local darkColor = baseColor * LOW_HEALTH_DARKEN_FACTOR
+		-- Lerp: Campurkan warna dasar dengan warna gelap. Saat health 100%, faktornya 0 (full warna dasar). Saat health 0%, faktornya 1 (full warna gelap).
+		local finalFillColor = baseColor:lerp(darkColor, 1 - healthPercent)
+
+		-- 3. Cek Garis Pandang (Line of Sight)
+		local isVisible = false
+		if ENABLE_LINE_OF_SIGHT_CHECK then
+			table.insert(raycastParams.FilterDescendantsInstances, data.character)
+			local result = workspace:Raycast(cameraPos, data.rootPart.Position - cameraPos, raycastParams)
+			table.remove(raycastParams.FilterDescendantsInstances, #raycastParams.FilterDescendantsInstances)
+			isVisible = (result == nil)
+		else
+			isVisible = true
+		end
+
+		-- 4. Tentukan Transparansi
+		local fillTransparency, outlineTransparency
+		if isVisible then
+			fillTransparency = VISIBLE_FILL_TRANSPARENCY
+			outlineTransparency = VISIBLE_OUTLINE_TRANSPARENCY
+		else
+			fillTransparency = OCCLUDED_FILL_TRANSPARENCY
+			outlineTransparency = OCCLUDED_OUTLINE_TRANSPARENCY
+		end
+
+		-- 5. Kalkulasi Fading Jarak
+		local distance = (cameraPos - data.rootPart.Position).Magnitude
+		if ENABLE_DISTANCE_FADING and distance > FADE_START_DISTANCE then
+			local fade = (distance - FADE_START_DISTANCE) / (MAX_DISTANCE - FADE_START_DISTANCE)
+			fade = math.clamp(fade, 0, 1)
+			fillTransparency = fillTransparency + (1 - fillTransparency) * fade
+			outlineTransparency = outlineTransparency + (1 - outlineTransparency) * fade
+		end
+
+		-- 6. Terapkan Semua Properti
+		data.highlight.FillColor = finalFillColor
+		data.highlight.OutlineColor = VISIBLE_OUTLINE_COLOR -- Outline dibuat konsisten agar tetap jelas
+		data.highlight.FillTransparency = fillTransparency
+		data.highlight.OutlineTransparency = outlineTransparency
+		data.highlight.Enabled = (distance <= MAX_DISTANCE) or not ENABLE_DISTANCE_CULLING
+	end
+end
+
+
+-- Fungsi setup dan cleanup koneksi (tetap sama, sudah robust)
+local function setupPlayerConnections(player)
+	if playerConnections[player] then return end
+	local connections = {}
+	playerConnections[player] = connections
+
+	local function onCharacterChanged(character)
+		task.defer(managePlayerHighlightState, player)
+		if character then
+			local humanoid = character:WaitForChild("Humanoid", 2)
+			if humanoid then
+				connections.Died = humanoid.Died:Connect(function()
+					task.defer(managePlayerHighlightState, player)
+				end)
+			end
+		end
+	end
+	
+	connections.CharacterAdded = player.CharacterAdded:Connect(onCharacterChanged)
+	connections.CharacterRemoving = player.CharacterRemoving:Connect(function()
+		if connections.Died and connections.Died.Connected then connections.Died:Disconnect(); connections.Died = nil end
+		task.defer(managePlayerHighlightState, player)
+	end)
+
+	connections.TeamChanged = player:GetPropertyChangedSignal("Team"):Connect(function()
+		managePlayerHighlightState(player)
+	end)
+	
+	if player.Character then onCharacterChanged(player.Character) end
+end
+
+local function cleanupPlayerConnections(player)
+	if trackedPlayers[player] then
+		if trackedPlayers[player].highlight then trackedPlayers[player].highlight:Destroy() end
+		trackedPlayers[player] = nil
+	end
+	if not playerConnections[player] then return end
+	for _, connection in pairs(playerConnections[player]) do
+		if connection.Connected then connection:Disconnect() end
+	end
+	playerConnections[player] = nil
+end
+
+local function updateAllPlayers()
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player ~= LocalPlayer then
+			managePlayerHighlightState(player)
+		end
+	end
+end
+
+-- ----- KONEKSI EVENT UTAMA -----
+LocalPlayer:GetPropertyChangedSignal("Team"):Connect(updateAllPlayers)
+Players.PlayerAdded:Connect(setupPlayerConnections)
+Players.PlayerRemoving:Connect(cleanupPlayerConnections)
+for _, player in ipairs(Players:GetPlayers()) do
+	if player ~= LocalPlayer then setupPlayerConnections(player) end
+end
+local heartbeatConnection = RunService.Heartbeat:Connect(updateTrackedHighlights)
+
+-- ----- Pembersihan Akhir -----
+script.Destroying:Connect(function()
+	heartbeatConnection:Disconnect()
+	for player, _ in pairs(playerConnections) do cleanupPlayerConnections(player) end
+end)
+
+print("Smart & Adaptive Player Highlighting Script Initialized (v4)")
+
