@@ -273,6 +273,26 @@ local function FlingPlayer(targetPlayer, isFromAura)
     local bodyVelocity 
 
     local flingActuallyHappened = false 
+-- [[ LOGIKA BARU: Pra-Teleportasi untuk Target Jauh ]]
+-- Sebelum memulai fling, kita pindah ke dekat target terlebih dahulu.
+-- Ini memastikan karakter target dimuat dan kita berada di lokasi yang benar
+-- sebelum loop fling yang intens dimulai.
+
+local stagingPosition = targetRootPart.Position + Vector3.new(0, 5, 0) -- Posisi aman di atas kepala target
+localRootPartAtStart.CFrame = CFrame.new(stagingPosition)
+
+-- Beri jeda sangat singkat (penting!) agar engine Roblox memproses
+-- perpindahan posisi besar ini sebelum kita melanjutkan.
+task.wait(0.1)
+
+-- Lakukan pengecekan terakhir untuk memastikan karakter kita tidak hilang setelah teleportasi jauh.
+if not (Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")) then
+    if not isFromAura then ShowStatus("Failed to teleport to target. Aborting.", Color3.fromRGB(255, 50, 50)) end
+    -- Coba kembalikan kamera jika gagal
+    workspace.CurrentCamera.CameraSubject = originalCameraSubject
+    return false
+end
+-- [[ AKHIR LOGIKA BARU ]]
 
     local success, err = pcall(function()
         workspace.CurrentCamera.CameraSubject = targetRootPart 
