@@ -200,6 +200,8 @@ local function stopSticking()
     ShowStatus("Sticking stopped.", Color3.fromRGB(255, 150, 0))
 end
 
+-- [[ GANTI FUNGSI LAMA ANDA DENGAN YANG INI ]]
+
 local function startSticking(target)
     stopSticking() -- Stop any previous sticking first
 
@@ -231,11 +233,20 @@ local function startSticking(target)
             return
         end
 
-        -- The main action: Set our CFrame to the target's CFrame
-        localRoot.CFrame = targetRoot.CFrame * STICK_OFFSET
+        ---[[ PERUBAHAN UTAMA DI SINI ]] ---
+        -- Logika lama (kaku): localRoot.CFrame = targetRoot.CFrame * STICK_OFFSET
+        
+        -- Logika baru (fleksibel):
+        -- 1. Ambil POSISI target.
+        -- 2. Ambil ROTASI dari kamera kita sendiri.
+        -- 3. Gabungkan keduanya.
+        local targetPosition = targetRoot.Position
+        local cameraRotation = workspace.CurrentCamera.CFrame.Rotation
+
+        localRoot.CFrame = CFrame.new(targetPosition) * cameraRotation * STICK_OFFSET
+        ------------------------------------
     end)
 end
-
 -- Event Connections
 SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
     if searchDebounceThread then task.cancel(searchDebounceThread) end
