@@ -1,3 +1,5 @@
+-- [[ Skrip Advanced Teleport v2.1 - Diperbaiki oleh Gemini ]]
+
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
@@ -10,7 +12,7 @@ local searchDebounceTime = 0.15 -- Lebih cepat
 local searchDebounceThread = nil
 local selectedPlayerName = nil
 local teleportCooldown = false
-local lastSearchQuery = ""
+local lastSearchQuery = nil -- [[ PERUBAHAN 1: Diubah ke nil agar update pertama selalu jalan ]]
 local cachedPlayers = {}
 local updateConnection = nil
 
@@ -20,10 +22,10 @@ local CONFIG = {
     MAX_TELEPORT_ATTEMPTS = 5, -- Maksimum percobaan teleport
     TELEPORT_RETRY_DELAY = 0.2, -- Delay antar percobaan
     SEARCH_MIN_LENGTH = 1, -- Minimum panjang search
-    COOLDOWN_TIME = 1, -- Cooldown teleport dalam detik
+    COOLDOWN_TIME = 0,1, -- Cooldown teleport dalam detik
 }
 
---// GUI Creation
+--// GUI Creation (Tidak ada perubahan di bagian ini)
 local ScreenGui = Instance.new("ScreenGui")
 local MainFrame = Instance.new("Frame")
 local UICorner = Instance.new("UICorner")
@@ -58,7 +60,7 @@ Title.BackgroundTransparency = 1
 Title.Position = UDim2.new(0, 0, 0.02, 0)
 Title.Size = UDim2.new(1, 0, 0.08, 0)
 Title.Font = Enum.Font.GothamBold
-Title.Text = "🚀 Advanced Teleport v2.0"
+Title.Text = "🚀 Advanced Teleport v2.1"
 Title.TextColor3 = Color3.fromRGB(100, 200, 255)
 Title.TextSize = 18
 
@@ -134,13 +136,12 @@ StatusLabel.TextYAlignment = Enum.TextYAlignment.Top
 
 ScreenGui.Parent = PlayerGui
 
---// Advanced Utility Functions
+--// Advanced Utility Functions (Tidak ada perubahan di bagian ini)
 local function ShowStatus(message, color, duration, isError)
     local prefix = isError and "❌ " or (color == Color3.fromRGB(100, 255, 100) and "✅ " or "ℹ️ ")
     StatusLabel.Text = prefix .. message
     StatusLabel.TextColor3 = color or Color3.fromRGB(255, 255, 255)
     
-    -- Auto clear setelah duration
     task.delay(duration or 4, function()
         if StatusLabel and StatusLabel.Text == (prefix .. message) then
             StatusLabel.Text = "⏳ Menunggu aksi..."
@@ -149,7 +150,6 @@ local function ShowStatus(message, color, duration, isError)
     end)
 end
 
--- Fungsi pencarian player yang lebih canggih
 local function AdvancedGetPlayer(searchTerm)
     if not searchTerm or searchTerm == "" then return nil end
     
@@ -161,22 +161,18 @@ local function AdvancedGetPlayer(searchTerm)
             local name = playerObj.Name:lower():gsub("%s+", "")
             local displayName = playerObj.DisplayName:lower():gsub("%s+", "")
             
-            -- Exact match priority
             if name == searchTerm or displayName == searchTerm then
                 return playerObj
             end
             
-            -- Starts with match
             if name:match("^" .. searchTerm) or displayName:match("^" .. searchTerm) then
                 table.insert(results, {player = playerObj, priority = 1})
-            -- Contains match
             elseif name:match(searchTerm) or displayName:match(searchTerm) then
                 table.insert(results, {player = playerObj, priority = 2})
             end
         end
     end
     
-    -- Sort by priority dan return yang terbaik
     if #results > 0 then
         table.sort(results, function(a, b) return a.priority < b.priority end)
         return results[1].player
@@ -185,7 +181,6 @@ local function AdvancedGetPlayer(searchTerm)
     return nil
 end
 
--- Fungsi validasi player yang lebih lengkap
 local function ValidatePlayer(targetPlayer)
     if not targetPlayer then
         return false, "Player tidak ditemukan"
@@ -202,7 +197,6 @@ local function ValidatePlayer(targetPlayer)
     return true, "Player valid"
 end
 
--- Fungsi validasi character yang lebih detail
 local function ValidateCharacter(character, playerName)
     if not character then
         return false, playerName .. " belum spawn"
@@ -229,7 +223,6 @@ local function ValidateCharacter(character, playerName)
     return true, "Character valid", rootPart
 end
 
--- Cache system untuk performa yang lebih baik
 local function UpdatePlayerCache()
     cachedPlayers = {}
     for _, player in ipairs(Players:GetPlayers()) do
@@ -242,11 +235,14 @@ end
 
 -- Update player list dengan optimasi
 local function UpdatePlayerList(searchText)
-    if searchText == lastSearchQuery then return end
-    lastSearchQuery = searchText or ""
+    -- [[ PERUBAHAN 2: Logika pengecekan diubah agar lebih fleksibel ]]
+	local currentSearchText = searchText or ""
+    if currentSearchText == lastSearchQuery and currentSearchText ~= "" then 
+		return 
+	end
+    lastSearchQuery = currentSearchText
     
-    searchText = searchText and searchText:lower() or ""
-    selectedPlayerName = nil
+    local lowerSearchText = currentSearchText:lower()
     
     -- Clear existing buttons
     for _, child in ipairs(PlayerList:GetChildren()) do
@@ -261,14 +257,14 @@ local function UpdatePlayerList(searchText)
             local name = p.Name:lower()
             local displayName = p.DisplayName:lower()
             
-            if searchText == "" or 
-               name:match(searchText) or 
-               displayName:match(searchText) then
+            if lowerSearchText == "" or 
+               name:match(lowerSearchText) or 
+               displayName:match(lowerSearchText) then
                 
-                -- Check if player has valid character
                 local hasValidChar = p.Character and 
                                    p.Character:FindFirstChild("HumanoidRootPart") and
-                                   p.Character:FindFirstChild("Humanoid")
+                                   p.Character:FindFirstChild("Humanoid") and
+                                   p.Character.Humanoid.Health > 0
                 
                 table.insert(playersToShow, {
                     player = p,
@@ -279,7 +275,6 @@ local function UpdatePlayerList(searchText)
         end
     end
 
-    -- Sort: valid characters first, then by ping
     table.sort(playersToShow, function(a, b)
         if a.hasValidChar ~= b.hasValidChar then
             return a.hasValidChar
@@ -291,7 +286,6 @@ local function UpdatePlayerList(searchText)
         local p = data.player
         local playerButton = Instance.new("TextButton")
         
-        -- Status indicator
         local statusIcon = data.hasValidChar and "🟢" or "🔴"
         local pingText = math.floor(data.ping) .. "ms"
         
@@ -310,7 +304,6 @@ local function UpdatePlayerList(searchText)
         btnCorner.CornerRadius = UDim.new(0, 6)
         btnCorner.Parent = playerButton
 
-        -- Hover effect
         local function CreateAdvancedHoverEffect(button)
             local originalColor = button.BackgroundColor3
             button.MouseEnter:Connect(function()
@@ -346,26 +339,30 @@ local function AdvancedTeleportToPlayer(targetPlayer)
         return
     end
     
-    -- Set cooldown
     teleportCooldown = true
     task.delay(CONFIG.COOLDOWN_TIME, function() teleportCooldown = false end)
     
-    -- Validate local player
     local localCharacter = Player.Character
     local isValid, message, localRoot = ValidateCharacter(localCharacter, "Anda")
+    
+    -- [[ PERUBAHAN 3: Validasi tambahan untuk memastikan pemain lokal tidak sedang duduk ]]
+    if isValid and localCharacter:FindFirstChildOfClass("Humanoid").Sit then
+        localCharacter:FindFirstChildOfClass("Humanoid").Sit = false
+        ShowStatus("ℹ️ Anda sedang duduk, otomatis berdiri...", Color3.fromRGB(150, 200, 255), 1.5)
+        task.wait(0.2) -- Beri waktu untuk animasi berdiri
+    end
+
     if not isValid then
         ShowStatus(message, Color3.fromRGB(255, 100, 100), 3, true)
         return
     end
     
-    -- Validate target player
     local isPlayerValid, playerMessage = ValidatePlayer(targetPlayer)
     if not isPlayerValid then
         ShowStatus(playerMessage, Color3.fromRGB(255, 100, 100), 3, true)
         return
     end
     
-    -- Multiple attempts teleport
     local attempts = 0
     local success = false
     
@@ -375,7 +372,6 @@ local function AdvancedTeleportToPlayer(targetPlayer)
     while attempts < CONFIG.MAX_TELEPORT_ATTEMPTS and not success do
         attempts = attempts + 1
         
-        -- Re-validate target character setiap attempt
         local targetCharacter = targetPlayer.Character
         local isTargetValid, targetMessage, targetRoot = ValidateCharacter(targetCharacter, targetPlayer.DisplayName)
         
@@ -386,24 +382,15 @@ local function AdvancedTeleportToPlayer(targetPlayer)
             continue
         end
         
-        -- Perform teleport dengan error handling
         local teleportSuccess = pcall(function()
             local targetCFrame = targetRoot.CFrame
             local offset = CONFIG.TELEPORT_OFFSET
-            
-            -- Add random small offset untuk avoid collision
-            local randomOffset = Vector3.new(
-                math.random(-2, 2),
-                0,
-                math.random(-2, 2)
-            )
-            
+            local randomOffset = Vector3.new(math.random(-2, 2), 0, math.random(-2, 2))
             localRoot.CFrame = targetCFrame + offset + randomOffset
             
-            -- Double check position
             task.wait(0.1)
             local distance = (localRoot.Position - targetRoot.Position).Magnitude
-            if distance > 50 then -- Teleport mungkin gagal
+            if distance > 50 then
                 error("Teleport distance too far")
             end
         end)
@@ -431,12 +418,10 @@ end
 SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
     local searchText = SearchBox.Text
     
-    -- Cancel previous search
     if searchDebounceThread then 
         task.cancel(searchDebounceThread) 
     end
     
-    -- Debounce search
     searchDebounceThread = task.delay(searchDebounceTime, function()
         if SearchBox and SearchBox.Text == searchText then
             UpdatePlayerList(searchText)
@@ -446,7 +431,7 @@ SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
 end)
 
 TeleportButton.MouseButton1Click:Connect(function()
-    local targetName = SearchBox.Text:gsub("%s+", "") -- Remove spaces
+    local targetName = SearchBox.Text:gsub("%s+", "")
     
     if targetName == "" then
         ShowStatus("Masukkan nama pemain atau pilih dari list", 
@@ -464,12 +449,12 @@ TeleportButton.MouseButton1Click:Connect(function()
 end)
 
 RefreshButton.MouseButton1Click:Connect(function()
+    lastSearchQuery = nil -- [[ PERUBAHAN 4: Reset lastSearchQuery agar refresh benar-benar terjadi ]]
     UpdatePlayerCache()
     UpdatePlayerList(SearchBox.Text)
     ShowStatus("📋 Daftar pemain diperbarui", Color3.fromRGB(100, 255, 100), 2)
 end)
 
--- Advanced hover effects
 local function CreateAdvancedHoverEffect(button, colorIntensity)
     local originalColor = button.BackgroundColor3
     button.MouseEnter:Connect(function()
@@ -491,20 +476,23 @@ CreateAdvancedHoverEffect(RefreshButton, 0.25)
 local function StartAutoUpdate()
     if updateConnection then updateConnection:Disconnect() end
     
-    updateConnection = RunService.Heartbeat:Connect(function()
-        -- Update setiap 2 detik
-        if tick() % 2 < 0.016 then
-            UpdatePlayerCache()
-            if SearchBox.Text == "" then
-                UpdatePlayerList("")
+    updateConnection = RunService.Heartbeat:Connect(function(dt)
+        -- [[ PERUBAHAN 5: Logika auto-update disederhanakan agar selalu refresh ]]
+        -- Timer sederhana untuk berjalan setiap 2 detik
+        local timer = (timer or 0) + dt
+        if timer >= 2 then
+            timer = 0
+            if MainFrame.Visible then -- Hanya update jika GUI terlihat
+                UpdatePlayerCache()
+                UpdatePlayerList(SearchBox.Text)
             end
         end
     end)
 end
 
--- Player events dengan optimasi
+-- Player events (Tidak ada perubahan signifikan)
 Players.PlayerAdded:Connect(function(player)
-    task.wait(1) -- Wait for player to fully load
+    task.wait(1) 
     UpdatePlayerCache()
     UpdatePlayerList(SearchBox.Text)
     ShowStatus(string.format("🎮 %s bergabung ke server", player.DisplayName), 
@@ -522,7 +510,6 @@ Players.PlayerRemoving:Connect(function(player)
         Color3.fromRGB(255, 200, 100), 3)
 end)
 
--- Keyboard shortcuts
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
     
@@ -537,22 +524,20 @@ end)
 
 --// Initialize
 UpdatePlayerCache()
-UpdatePlayerList()
+UpdatePlayerList("") -- [[ PERUBAHAN 6: Panggil dengan string kosong untuk memastikan daftar tampil ]]
 StartAutoUpdate()
 
--- Cleanup function
 local function Cleanup()
     if updateConnection then updateConnection:Disconnect() end
     if searchDebounceThread then task.cancel(searchDebounceThread) end
 end
 
--- Auto cleanup on GUI destroy
 ScreenGui.AncestryChanged:Connect(function()
     if not ScreenGui.Parent then
         Cleanup()
     end
 end)
 
-print("🚀 Advanced Teleport GUI v2.0 loaded successfully!")
+print("🚀 Advanced Teleport GUI v2.1 loaded successfully!")
 ShowStatus("🎯 Advanced Teleport GUI siap! Tekan F5 untuk refresh, Enter untuk teleport", 
     Color3.fromRGB(100, 255, 100), 6)
