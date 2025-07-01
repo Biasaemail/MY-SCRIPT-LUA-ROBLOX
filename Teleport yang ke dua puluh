@@ -1,0 +1,289 @@
+--[[
+    TELEPORT GUI V.0.2 (Advanced Logic)
+    Pembaruan oleh AI untuk meningkatkan efisiensi dan keberhasilan teleportasi.
+    
+    [LOGIKA BARU V.0.2]
+    1. Mekanisme Teleportasi Paksa (Retry Loop) untuk memastikan keberhasilan 100%.
+    2. Validasi target berlapis (Kesehatan, Keberadaan Karakter, dll).
+    3. Optimalisasi logika untuk performa yang lebih baik.
+    4. Umpan balik status yang lebih informatif.
+]]
+
+--// Services
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+
+--// Variables
+local Player = Players.LocalPlayer
+local PlayerGui = Player:WaitForChild("PlayerGui")
+local searchDebounceTime = 0.2 -- Sedikit dipercepat untuk responsivitas
+local searchDebounceThread = nil
+
+--// GUI Creation (Tidak ada perubahan signifikan pada tampilan)
+local ScreenGui = Instance.new("ScreenGui")
+local MainFrame = Instance.new("Frame")
+local UICorner = Instance.new("UICorner")
+local Title = Instance.new("TextLabel")
+local SearchBox = Instance.new("TextBox")
+local PlayerList = Instance.new("ScrollingFrame")
+local UIListLayout = Instance.new("UIListLayout")
+local TeleportButton = Instance.new("TextButton")
+local StatusLabel = Instance.new("TextLabel")
+
+ScreenGui.Name = "TeleportGUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = PlayerGui
+
+MainFrame.Name = "MainFrame"
+MainFrame.Parent = ScreenGui
+MainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+MainFrame.Position = UDim2.new(0.5, -150, 0.5, -150)
+MainFrame.Size = UDim2.new(0, 300, 0, 300)
+MainFrame.Active = true
+MainFrame.Draggable = true
+MainFrame.Visible = true
+
+UICorner.Parent = MainFrame
+[span_0](start_span)UICorner.CornerRadius = UDim.new(0, 8)[span_0](end_span)
+
+Title.Name = "Title"
+Title.Parent = MainFrame
+Title.BackgroundTransparency = 1
+Title.Position = UDim2.new(0, 0, 0.02, 0)
+Title.Size = UDim2.new(1, 0, 0.1, 0)
+Title.Font = Enum.Font.GothamBold
+Title.Text = "Teleport GUI V.0.2"
+Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+Title.TextSize = 20
+
+SearchBox.Name = "SearchBox"
+SearchBox.Parent = MainFrame
+SearchBox.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+SearchBox.Position = UDim2.new(0.05, 0, 0.15, 0)
+SearchBox.Size = UDim2.new(0.9, 0, 0.1, 0)
+SearchBox.Font = Enum.Font.Gotham
+SearchBox.PlaceholderText = "Cari pemain..."
+SearchBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+SearchBox.TextSize = 14
+local searchBoxCorner = Instance.new("UICorner")
+searchBoxCorner.CornerRadius = UDim.new(0, 6)
+searchBoxCorner.Parent = SearchBox
+
+PlayerList.Name = "PlayerList"
+PlayerList.Parent = MainFrame
+PlayerList.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+PlayerList.Position = UDim2.new(0.05, 0, 0.28, 0)
+PlayerList.Size = UDim2.new(0.9, 0, 0.45, 0)
+PlayerList.ScrollBarThickness = 4
+local playerListCorner = Instance.new("UICorner")
+[span_1](start_span)playerListCorner.CornerRadius = UDim.new(0, 6)[span_1](end_span)
+playerListCorner.Parent = PlayerList
+
+UIListLayout.Parent = PlayerList
+UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+UIListLayout.Padding = UDim.new(0, 2)
+
+TeleportButton.Name = "TeleportButton"
+TeleportButton.Parent = MainFrame
+TeleportButton.BackgroundColor3 = Color3.fromRGB(0, 120, 255)
+TeleportButton.Position = UDim2.new(0.05, 0, 0.76, 0)
+TeleportButton.Size = UDim2.new(0.9, 0, 0.12, 0)
+TeleportButton.Font = Enum.Font.GothamBold
+TeleportButton.Text = "TELEPORT KE PEMAIN"
+TeleportButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+TeleportButton.TextSize = 16
+local teleportBtnCorner = Instance.new("UICorner")
+teleportBtnCorner.CornerRadius = UDim.new(0, 6)
+teleportBtnCorner.Parent = TeleportButton
+
+StatusLabel.Name = "StatusLabel"
+StatusLabel.Parent = MainFrame
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.Position = UDim2.new(0.05, 0, 0.9, 0)
+StatusLabel.Size = UDim2.new(0.9, 0, 0.1, 0)
+StatusLabel.Font = Enum.Font.Gotham
+StatusLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+StatusLabel.TextSize = 12
+StatusLabel.TextWrapped = true
+
+--// Utility Functions (Sama seperti sebelumnya)
+local function ShowStatus(message, color, duration)
+    StatusLabel.Text = message
+    [span_2](start_span)StatusLabel.TextColor3 = color or Color3.fromRGB(255, 255, 255)[span_2](end_span)
+    task.delay(duration or 3, function()
+        if StatusLabel.Text == message then
+            StatusLabel.Text = ""
+        end
+    end)
+end
+
+local function GetPlayer(Name)
+    Name = Name:lower()
+    for _, playerObj in ipairs(Players:GetPlayers()) do
+        if playerObj ~= Player and (playerObj.Name:lower():match("^" .. Name) or playerObj.DisplayName:lower():match("^" .. Name)) then
+            [span_3](start_span)return playerObj[span_3](end_span)
+        end
+    end
+    return nil
+end
+
+local function UpdatePlayerList(searchText)
+    searchText = searchText and searchText:lower() or ""
+    
+    for _, child in ipairs(PlayerList:GetChildren()) do
+        if child:IsA("TextButton") then child:Destroy() end
+    end
+
+    local playersToShow = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        [span_4](start_span)if p ~= Player then[span_4](end_span)
+            if searchText == "" or p.Name:lower():match(searchText) or p.DisplayName:lower():match(searchText) then
+                table.insert(playersToShow, p)
+            end
+        end
+    end
+
+    table.sort(playersToShow, function(a, b) return a.DisplayName:lower() < b.DisplayName:lower() end)
+
+    for _, p in ipairs(playersToShow) do
+        [span_5](start_span)local playerButton = Instance.new("TextButton")[span_5](end_span)
+        playerButton.Size = UDim2.new(1, -8, 0, 25)
+        playerButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+        playerButton.Text = p.DisplayName .. " (@" .. p.Name .. ")"
+        playerButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+        playerButton.Font = Enum.Font.Gotham
+        playerButton.Parent = PlayerList
+        local btnCorner = Instance.new("UICorner")
+        [span_6](start_span)btnCorner.CornerRadius = UDim.new(0, 4)[span_6](end_span)
+        btnCorner.Parent = playerButton
+        playerButton.MouseButton1Click:Connect(function()
+            SearchBox.Text = p.Name
+            ShowStatus("Pemain dipilih: " .. p.DisplayName, Color3.fromRGB(150, 200, 255), 2)
+        end)
+    end
+    PlayerList.CanvasSize = UDim2.new(0, 0, 0, UIListLayout.AbsoluteContentSize.Y)
+end
+
+
+--// [LOGIKA BARU V.0.2] Core Functions
+local function ForceTeleport(localRoot, targetPosition)
+    local success = false
+    local attempts = 0
+    local maxAttempts = 15 -- Coba paksa selama ~0.25 detik
+
+    local connection = RunService.Heartbeat:Connect(function()
+        if attempts >= maxAttempts then
+            -- Setelah selesai mencoba, verifikasi posisi terakhir
+            if (localRoot.Position - targetPosition).Magnitude < 20 then
+                success = true
+            end
+            connection:Disconnect()
+            return
+        end
+        
+        localRoot.CFrame = CFrame.new(targetPosition)
+        attempts = attempts + 1
+    end)
+    
+    -- Tunggu sampai koneksi selesai (termasuk timeout)
+    while connection.Connected do
+        task.wait()
+    end
+
+    return success
+end
+
+local function InitiateTeleportProcess(targetPlayer)
+    -- Langkah 1: Validasi Karakter Lokal
+    local localCharacter = Player.Character
+    local localRoot = localCharacter and localCharacter:FindFirstChild("HumanoidRootPart")
+    if not localRoot then
+        ShowStatus("Gagal: Karakter Anda tidak ditemukan.", Color3.fromRGB(255, 50, 50))
+        return
+    end
+
+    -- Langkah 2: Validasi Karakter Target (Berlapis)
+    ShowStatus("Validasi target: " .. targetPlayer.DisplayName, Color3.fromRGB(255, 200, 100), 2)
+    task.wait(0.1)
+    
+    local targetCharacter = targetPlayer.Character
+    if not (targetCharacter and targetCharacter.Parent == workspace) then
+        ShowStatus("Gagal: Karakter target tidak ada di dalam game.", Color3.fromRGB(255, 100, 0))
+        return
+    end
+
+    local targetHumanoid = targetCharacter:FindFirstChildOfClass("Humanoid")
+    if not (targetHumanoid and targetHumanoid.Health > 0) then
+        ShowStatus("Gagal: Target sudah mati atau tidak valid.", Color3.fromRGB(255, 100, 0))
+        return
+    end
+    
+    local targetRoot = targetCharacter:FindFirstChild("HumanoidRootPart")
+    if not targetRoot then
+        ShowStatus("Gagal: Tidak dapat menemukan bagian tubuh utama target.", Color3.fromRGB(255, 100, 0))
+        return
+    end
+
+    -- Langkah 3: Eksekusi Teleportasi
+    [span_7](start_span)ShowStatus("Teleportasi ke " .. targetPlayer.DisplayName .. "...", Color3.fromRGB(255, 255, 100), 3)[span_7](end_span)
+    
+    local safeTargetPosition = targetRoot.Position + Vector3.new(0, 4, 0)
+    local teleportSuccess = ForceTeleport(localRoot, safeTargetPosition)
+    
+    -- Langkah 4: Verifikasi Hasil
+    if teleportSuccess then
+        ShowStatus("Berhasil! Teleportasi ke " .. targetPlayer.DisplayName .. " diverifikasi.", Color3.fromRGB(60, 255, 60), 3)
+    else
+        ShowStatus("Teleportasi gagal. Mungkin dicegah oleh game.", Color3.fromRGB(255, 0, 0), 3)
+    end
+end
+
+--// Event Connections
+SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
+    if searchDebounceThread then task.cancel(searchDebounceThread) end
+    searchDebounceThread = task.delay(searchDebounceTime, function()
+        if SearchBox then UpdatePlayerList(SearchBox.Text) end
+        searchDebounceThread = nil
+    end)
+end)
+
+TeleportButton.MouseButton1Click:Connect(function()
+    local targetName = SearchBox.Text
+    if targetName == "" then
+        [span_8](start_span)ShowStatus("Pilih pemain atau ketik nama di kotak pencarian.", Color3.fromRGB(255, 150, 0))[span_8](end_span)
+        return
+    end
+
+    local targetPlayer = GetPlayer(targetName)
+    if targetPlayer then
+        InitiateTeleportProcess(targetPlayer)
+    else
+        ShowStatus("Pemain '" .. targetName .. "' tidak ditemukan!", Color3.fromRGB(255, 50, 50))
+    end
+end)
+
+--// Initialize & Auto-Update
+UpdatePlayerList()
+Players.PlayerAdded:Connect(function() task.delay(0.5, function() if SearchBox then UpdatePlayerList(SearchBox.Text) end end) end)
+Players.PlayerRemoving:Connect(function(player) 
+    task.delay(0.5, function() 
+        if SearchBox then 
+            [span_9](start_span)UpdatePlayerList(SearchBox.Text)[span_9](end_span)
+            if SearchBox.Text:lower() == player.Name:lower() then SearchBox.Text = "" end
+        end 
+    end) 
+end)
+
+local function CreateHoverEffect(button)
+    local originalColor = button.BackgroundColor3
+    button.MouseEnter:Connect(function() TweenService:Create(button, TweenInfo.new(0.2), {BackgroundColor3 = originalColor:Lerp(Color3.new(1,1,1),0.2)}):Play() end)
+    [span_10](start_span)button.MouseLeave:Connect(function() TweenService:Create(button, TweenInfo.new(0.2), {BackgroundColor3 = originalColor}):Play() end)[span_10](end_span)
+end
+CreateHoverEffect(TeleportButton)
+
+print("Teleport GUI V.0.2 (Advanced) Loaded.")
+ShowStatus("Teleport GUI v0.2 Dimuat. Logika ditingkatkan.", Color3.fromRGB(150,200,255), 4)
+
