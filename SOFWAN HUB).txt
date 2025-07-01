@@ -13,10 +13,6 @@
 --================================================================================--
 
 -- Mencegah GUI berjalan ulang jika sudah ada
-if game:GetService("CoreGui"):FindFirstChild("GhostHubReimagined") then
-	game:GetService("CoreGui"):FindFirstChild("GhostHubReimagined"):Destroy()
-end
-
 -- Layanan yang diperlukan
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
