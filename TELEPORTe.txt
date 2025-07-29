@@ -1,0 +1,474 @@
+--[[
+Changelog v2.2:
+- [VISUAL] GUI diperkecil (~25%) agar lebih ramah mobile & tidak menghalangi pandangan.
+- [ROBUST] Fungsi teleport dirombak total dengan pengecekan berlapis:
+    - Validasi state Humanoid pemain lokal & target (mati, jatuh, duduk).
+    - Verifikasi pasca-teleport dengan mengecek jarak & kemungkinan tersangkut.
+    - Penyesuaian CFrame sekunder jika terdeteksi akan tersangkut.
+- [ANTI-BUG] Logika teleport kini lebih aman, mengurangi risiko gagal karena anti-cheat atau fisika game.
+- [PRESISI] Offset teleport disesuaikan agar lebih dekat dengan target namun tetap aman dari terjebak di dalam pemain lain atau tanah.
+- [OPTIMASI] Sistem auto-update diubah dari Heartbeat ke loop task.wait() yang lebih efisien untuk tugas periodik.
+- [KODE] Penambahan komentar yang lebih detail untuk menjelaskan logika kompleks.
+]]
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+
+--// Variables
+local Player = Players.LocalPlayer
+local PlayerGui = Player:WaitForChild("PlayerGui")
+local searchDebounceTime = 0.15
+local searchDebounceThread = nil
+local selectedPlayerName = nil
+local teleportCooldown = false
+local lastSearchQuery = nil
+local updateLoopThread = nil
+
+--// Configuration
+local CONFIG = {
+    TELEPORT_OFFSET = Vector3.new(0, 3, 0),      -- Offset vertikal dikurangi agar lebih presisi.
+    RANDOM_HORIZONTAL_OFFSET = 1.5,              -- Offset acak horizontal untuk menghindari terjebak.
+    MAX_TELEPORT_ATTEMPTS = 5,                   -- Maksimum percobaan teleport.
+    TELEPORT_RETRY_DELAY = 0.25,                 -- Delay antar percobaan (sedikit lebih lama untuk stabilitas).
+    COOLDOWN_TIME = 1,                           -- Cooldown teleport dalam detik.
+    AUTO_REFRESH_INTERVAL = 2.5,                 -- Interval refresh list pemain (dalam detik).
+    POST_TELEPORT_VERIFICATION_DISTANCE = 75,    -- Jarak maksimal setelah teleport untuk dianggap berhasil.
+}
+
+--// GUI Creation (Ukuran & Posisi Disesuaikan)
+local ScreenGui = Instance.new("ScreenGui")
+local MainFrame = Instance.new("Frame")
+local UICorner = Instance.new("UICorner")
+local Title = Instance.new("TextLabel")
+local SearchBox = Instance.new("TextBox")
+local PlayerList = Instance.new("ScrollingFrame")
+local UIListLayout = Instance.new("UIListLayout")
+local TeleportButton = Instance.new("TextButton")
+local StatusLabel = Instance.new("TextLabel")
+local RefreshButton = Instance.new("TextButton")
+
+-- GUI Setup
+ScreenGui.Name = "AdvancedTeleportGUI_v2.2"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+-- [MODIFIKASI 1] Ukuran GUI diperkecil
+MainFrame.Name = "MainFrame"
+MainFrame.Parent = ScreenGui
+MainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+MainFrame.Position = UDim2.new(0.5, -140, 0.5, -160) -- Posisi disesuaikan dengan ukuran baru
+MainFrame.Size = UDim2.new(0, 280, 0, 320)          -- Ukuran diperkecil
+MainFrame.Active = true
+MainFrame.Draggable = true
+MainFrame.Visible = true
+
+UICorner.Parent = MainFrame
+UICorner.CornerRadius = UDim.new(0, 8)
+
+Title.Name = "Title"
+Title.Parent = MainFrame
+Title.BackgroundTransparency = 1
+Title.Position = UDim2.new(0, 0, 0.02, 0)
+Title.Size = UDim2.new(1, 0, 0.08, 0)
+Title.Font = Enum.Font.GothamBold
+Title.Text = "🚀 Adv Teleport v2.2"
+Title.TextColor3 = Color3.fromRGB(100, 200, 255)
+Title.TextSize = 16 -- Ukuran font disesuaikan
+
+SearchBox.Name = "SearchBox"
+SearchBox.Parent = MainFrame
+SearchBox.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+SearchBox.Position = UDim2.new(0.05, 0, 0.12, 0)
+SearchBox.Size = UDim2.new(0.75, 0, 0.09, 0) -- Tinggi disesuaikan
+SearchBox.Font = Enum.Font.Gotham
+SearchBox.PlaceholderText = "🔍 Cari pemain..."
+SearchBox.Text = ""
+SearchBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+SearchBox.TextSize = 13
+SearchBox.ClearTextOnFocus = true
+local searchBoxCorner = Instance.new("UICorner")
+searchBoxCorner.CornerRadius = UDim.new(0, 6)
+searchBoxCorner.Parent = SearchBox
+
+RefreshButton.Name = "RefreshButton"
+RefreshButton.Parent = MainFrame
+RefreshButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+RefreshButton.Position = UDim2.new(0.82, 0, 0.12, 0)
+RefreshButton.Size = UDim2.new(0.13, 0, 0.09, 0) -- Tinggi disesuaikan
+RefreshButton.Font = Enum.Font.GothamBold
+RefreshButton.Text = "🔄"
+RefreshButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+RefreshButton.TextSize = 16
+local refreshBtnCorner = Instance.new("UICorner")
+refreshBtnCorner.CornerRadius = UDim.new(0, 6)
+refreshBtnCorner.Parent = RefreshButton
+
+PlayerList.Name = "PlayerList"
+PlayerList.Parent = MainFrame
+PlayerList.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+PlayerList.Position = UDim2.new(0.05, 0, 0.23, 0)
+PlayerList.Size = UDim2.new(0.9, 0, 0.52, 0) -- Ukuran disesuaikan
+PlayerList.CanvasSize = UDim2.new(0, 0, 0, 0)
+PlayerList.ScrollBarThickness = 6
+PlayerList.ScrollingEnabled = true
+PlayerList.BorderSizePixel = 0
+local playerListCorner = Instance.new("UICorner")
+playerListCorner.CornerRadius = UDim.new(0, 8)
+playerListCorner.Parent = PlayerList
+
+UIListLayout.Parent = PlayerList
+UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+UIListLayout.Padding = UDim.new(0, 3)
+
+TeleportButton.Name = "TeleportButton"
+TeleportButton.Parent = MainFrame
+TeleportButton.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
+TeleportButton.Position = UDim2.new(0.05, 0, 0.77, 0)
+TeleportButton.Size = UDim2.new(0.9, 0, 0.11, 0) -- Ukuran disesuaikan
+TeleportButton.Font = Enum.Font.GothamBold
+TeleportButton.Text = "🎯 TELEPORT"
+TeleportButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+TeleportButton.TextSize = 15
+local teleportBtnCorner = Instance.new("UICorner")
+teleportBtnCorner.CornerRadius = UDim.new(0, 8)
+teleportBtnCorner.Parent = TeleportButton
+
+StatusLabel.Name = "StatusLabel"
+StatusLabel.Parent = MainFrame
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.Position = UDim2.new(0.05, 0, 0.89, 0)
+StatusLabel.Size = UDim2.new(0.9, 0, 0.1, 0) -- Ukuran disesuaikan
+StatusLabel.Font = Enum.Font.Gotham
+StatusLabel.Text = "✅ GUI siap."
+StatusLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+StatusLabel.TextSize = 12
+StatusLabel.TextWrapped = true
+StatusLabel.TextYAlignment = Enum.TextYAlignment.Top
+
+ScreenGui.Parent = PlayerGui
+
+--// Utility Functions (Tidak ada perubahan signifikan)
+local function ShowStatus(message, color, duration, isError)
+    local prefix = isError and "❌ " or (color == Color3.fromRGB(100, 255, 100) and "✅ " or "ℹ️ ")
+    StatusLabel.Text = prefix .. message
+    StatusLabel.TextColor3 = color or Color3.fromRGB(255, 255, 255)
+    
+    task.delay(duration or 4, function()
+        if StatusLabel and StatusLabel.Text == (prefix .. message) then
+            StatusLabel.Text = "⏳ Menunggu aksi..."
+            StatusLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+        end
+    end)
+end
+
+local function AdvancedGetPlayer(searchTerm)
+    if not searchTerm or searchTerm == "" then return nil end
+    searchTerm = searchTerm:lower():gsub("%s+", "")
+    local results = {}
+    for _, playerObj in ipairs(Players:GetPlayers()) do
+        if playerObj ~= Player then
+            local name = playerObj.Name:lower():gsub("%s+", "")
+            local displayName = playerObj.DisplayName:lower():gsub("%s+", "")
+            if name == searchTerm or displayName == searchTerm then return playerObj end
+            if name:match("^" .. searchTerm) or displayName:match("^" .. searchTerm) then
+                table.insert(results, {player = playerObj, priority = 1})
+            elseif name:match(searchTerm) or displayName:match(searchTerm) then
+                table.insert(results, {player = playerObj, priority = 2})
+            end
+        end
+    end
+    if #results > 0 then
+        table.sort(results, function(a, b) return a.priority < b.priority end)
+        return results[1].player
+    end
+    return nil
+end
+
+-- [MODIFIKASI 2] Pengecekan karakter yang lebih detail
+local function ValidateCharacter(character, playerName)
+    if not character or not character.Parent then
+        return false, playerName .. " tidak memiliki karakter yang valid"
+    end
+    
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then
+        return false, playerName .. " tidak memiliki Humanoid"
+    end
+    
+    if humanoid.Health <= 0 then
+        return false, playerName .. " sudah mati"
+    end
+
+    local state = humanoid:GetState()
+    if state == Enum.HumanoidStateType.Dead then
+        return false, playerName .. " sudah mati (state)"
+    end
+    
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then
+        return false, playerName .. " tidak memiliki HumanoidRootPart"
+    end
+    
+    if rootPart.Anchored then
+        return false, playerName .. " sedang 'Anchored' (kemungkinan di cutscene)"
+    end
+    
+    return true, "Karakter valid", rootPart, humanoid
+end
+
+--// Update Player List (Tidak ada perubahan signifikan)
+local function UpdatePlayerList(searchText)
+	local currentSearchText = searchText or ""
+    if currentSearchText == lastSearchQuery and currentSearchText ~= "" then return end
+    lastSearchQuery = currentSearchText
+    
+    local lowerSearchText = currentSearchText:lower()
+    
+    for _, child in ipairs(PlayerList:GetChildren()) do
+        if child:IsA("TextButton") then child:Destroy() end
+    end
+
+    local playersToShow = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= Player then
+            local name = p.Name:lower()
+            local displayName = p.DisplayName:lower()
+            if lowerSearchText == "" or name:match(lowerSearchText) or displayName:match(lowerSearchText) then
+                local isValid, _, _, humanoid = ValidateCharacter(p.Character, p.DisplayName)
+                table.insert(playersToShow, {
+                    player = p,
+                    hasValidChar = isValid,
+                    ping = p:GetNetworkPing() * 1000
+                })
+            end
+        end
+    end
+
+    table.sort(playersToShow, function(a, b)
+        if a.hasValidChar ~= b.hasValidChar then return a.hasValidChar end
+        return a.player.DisplayName:lower() < b.player.DisplayName:lower()
+    end)
+
+    for i, data in ipairs(playersToShow) do
+        local p = data.player
+        local playerButton = Instance.new("TextButton")
+        local statusIcon = data.hasValidChar and "🟢" or "🔴"
+        local pingText = math.floor(data.ping) .. "ms"
+        
+        playerButton.Size = UDim2.new(1, -8, 0, 28)
+        playerButton.BackgroundColor3 = data.hasValidChar and Color3.fromRGB(45, 70, 45) or Color3.fromRGB(70, 45, 45)
+        playerButton.Text = string.format("%s %s (@%s) %s", statusIcon, p.DisplayName, p.Name, pingText)
+        playerButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+        playerButton.TextSize = 12
+        playerButton.Font = Enum.Font.Gotham
+        playerButton.TextXAlignment = Enum.TextXAlignment.Left
+        playerButton.Parent = PlayerList
+
+        local btnCorner = Instance.new("UICorner")
+        btnCorner.CornerRadius = UDim.new(0, 6)
+        btnCorner.Parent = playerButton
+
+        playerButton.MouseEnter:Connect(function()
+            TweenService:Create(playerButton, TweenInfo.new(0.15), {BackgroundColor3 = playerButton.BackgroundColor3:Lerp(Color3.new(1,1,1), 0.15)}):Play()
+        end)
+        playerButton.MouseLeave:Connect(function()
+            TweenService:Create(playerButton, TweenInfo.new(0.15), {BackgroundColor3 = data.hasValidChar and Color3.fromRGB(45, 70, 45) or Color3.fromRGB(70, 45, 45)}):Play()
+        end)
+
+        playerButton.MouseButton1Click:Connect(function()
+            SearchBox.Text = p.Name
+            selectedPlayerName = p.Name
+            ShowStatus(string.format("Target: %s (%s)", p.DisplayName, data.hasValidChar and "Ready" or "Not Ready"), Color3.fromRGB(150, 200, 255), 2)
+        end)
+    end
+    
+    PlayerList.CanvasSize = UDim2.new(0, 0, 0, UIListLayout.AbsoluteContentSize.Y + 10)
+end
+
+--// [MODIFIKASI 3 & 4] Fungsi Teleport yang Dirombak Total
+local function AdvancedTeleportToPlayer(targetPlayer)
+    if teleportCooldown then
+        ShowStatus("Cooldown " .. CONFIG.COOLDOWN_TIME .. " detik.", Color3.fromRGB(255, 200, 0), 2)
+        return
+    end
+    
+    -- Validasi Pemain Lokal
+    local isValid, message, localRoot, localHumanoid = ValidateCharacter(Player.Character, "Anda")
+    if not isValid then
+        ShowStatus(message, Color3.fromRGB(255, 100, 100), 3, true)
+        return
+    end
+    
+    -- Otomatis berdiri jika duduk
+    if localHumanoid.Sit then
+        localHumanoid.Sit = false
+        ShowStatus("Anda sedang duduk, otomatis berdiri...", Color3.fromRGB(150, 200, 255), 1.5)
+        task.wait(0.2)
+    end
+
+    -- Validasi Target Pemain
+    if not targetPlayer or not targetPlayer.Parent then
+        ShowStatus("Target pemain sudah keluar.", Color3.fromRGB(255, 100, 100), 3, true)
+        return
+    end
+    
+    teleportCooldown = true
+    task.delay(CONFIG.COOLDOWN_TIME, function() teleportCooldown = false end)
+    
+    local attempts = 0
+    local success = false
+    
+    ShowStatus(string.format("Mencari %s...", targetPlayer.DisplayName), Color3.fromRGB(255, 255, 100), 2)
+    
+    while attempts < CONFIG.MAX_TELEPORT_ATTEMPTS and not success do
+        attempts = attempts + 1
+        
+        -- Validasi ulang target setiap percobaan
+        local isTargetValid, targetMessage, targetRoot, targetHumanoid = ValidateCharacter(targetPlayer.Character, targetPlayer.DisplayName)
+        
+        if not isTargetValid then
+            ShowStatus(string.format("Gagal (%d): %s", attempts, targetMessage), Color3.fromRGB(255, 150, 0), 2)
+            task.wait(CONFIG.TELEPORT_RETRY_DELAY)
+            continue
+        end
+        
+        -- Pengecekan tambahan: jangan teleport ke target yang sedang jatuh bebas
+        if targetHumanoid:GetState() == Enum.HumanoidStateType.Freefall then
+            ShowStatus(string.format("Gagal (%d): %s sedang jatuh.", attempts, targetPlayer.DisplayName), Color3.fromRGB(255, 150, 0), 2)
+            task.wait(CONFIG.TELEPORT_RETRY_DELAY)
+            continue
+        end
+        
+        local teleportSuccess, err = pcall(function()
+            -- Simpan CFrame target
+            local targetCFrame = targetRoot.CFrame
+            
+            -- [MODIFIKASI 4] Posisi lebih presisi dengan offset acak yang lebih kecil
+            local randomOffset = Vector3.new(
+                math.random(-CONFIG.RANDOM_HORIZONTAL_OFFSET, CONFIG.RANDOM_HORIZONTAL_OFFSET),
+                0,
+                math.random(-CONFIG.RANDOM_HORIZONTAL_OFFSET, CONFIG.RANDOM_HORIZONTAL_OFFSET)
+            )
+            
+            -- Lakukan teleportasi
+            localRoot.CFrame = targetCFrame + CONFIG.TELEPORT_OFFSET + randomOffset
+            
+            -- Verifikasi pasca-teleport
+            task.wait() -- Tunggu 1 frame agar fisika & replikasi berjalan
+            local distance = (localRoot.Position - targetRoot.Position).Magnitude
+            if distance > CONFIG.POST_TELEPORT_VERIFICATION_DISTANCE then
+                -- Jika jarak masih sangat jauh, teleport kemungkinan besar diblokir/gagal
+                error("Verifikasi jarak gagal. Jarak: " .. math.floor(distance))
+            end
+
+            -- Pengecekan jika tersangkut (strafing no physics)
+            if localHumanoid:GetState() == Enum.HumanoidStateType.StrafingNoPhysics then
+                ShowStatus("Terdeteksi tersangkut, mencoba penyesuaian...", Color3.fromRGB(255, 200, 0), 1)
+                localRoot.CFrame = localRoot.CFrame + Vector3.new(0, 2, 0) -- Dorong sedikit ke atas
+            end
+        end)
+        
+        if teleportSuccess then
+            success = true
+            ShowStatus(string.format("✨ Berhasil teleport ke %s! (Percobaan %d)", targetPlayer.DisplayName, attempts), Color3.fromRGB(100, 255, 100), 4)
+        else
+            ShowStatus(string.format("Gagal (%d): %s. Mencoba lagi...", attempts, tostring(err)), Color3.fromRGB(255, 200, 0), 1)
+            task.wait(CONFIG.TELEPORT_RETRY_DELAY)
+        end
+    end
+    
+    if not success then
+        ShowStatus(string.format("Teleport gagal total ke %s setelah %d percobaan.", targetPlayer.DisplayName, CONFIG.MAX_TELEPORT_ATTEMPTS), Color3.fromRGB(255, 100, 100), 5, true)
+    end
+end
+
+--// Event Connections
+SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
+    local searchText = SearchBox.Text
+    if searchDebounceThread then task.cancel(searchDebounceThread) end
+    searchDebounceThread = task.delay(searchDebounceTime, function()
+        if SearchBox and SearchBox.Text == searchText then
+            UpdatePlayerList(searchText)
+        end
+        searchDebounceThread = nil
+    end)
+end)
+
+TeleportButton.MouseButton1Click:Connect(function()
+    local targetName = SearchBox.Text:gsub("%s+", "")
+    if targetName == "" then
+        ShowStatus("Masukkan nama pemain atau pilih dari list", Color3.fromRGB(255, 150, 0), 3)
+        return
+    end
+    local targetPlayer = AdvancedGetPlayer(targetName)
+    if targetPlayer then
+        AdvancedTeleportToPlayer(targetPlayer)
+    else
+        ShowStatus(string.format("Pemain '%s' tidak ditemukan", targetName), Color3.fromRGB(255, 100, 100), 4, true)
+    end
+end)
+
+RefreshButton.MouseButton1Click:Connect(function()
+    lastSearchQuery = nil
+    UpdatePlayerList(SearchBox.Text)
+    ShowStatus("Daftar pemain diperbarui", Color3.fromRGB(100, 255, 100), 2)
+end)
+
+--// Auto-update system (Lebih efisien)
+local function StartAutoUpdate()
+    if updateLoopThread then task.cancel(updateLoopThread) end
+    
+    updateLoopThread = task.spawn(function()
+        while MainFrame.Parent do -- Loop akan berhenti jika GUI dihapus
+            if MainFrame.Visible then
+                UpdatePlayerList(SearchBox.Text)
+            end
+            task.wait(CONFIG.AUTO_REFRESH_INTERVAL)
+        end
+    end)
+end
+
+--// Player events
+Players.PlayerAdded:Connect(function(player)
+    task.wait(1) 
+    UpdatePlayerList(SearchBox.Text)
+    ShowStatus(string.format("🎮 %s bergabung", player.DisplayName), Color3.fromRGB(100, 255, 100), 3)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    if SearchBox.Text:lower() == player.Name:lower() then 
+        SearchBox.Text = ""
+        selectedPlayerName = nil
+    end
+    UpdatePlayerList(SearchBox.Text)
+    ShowStatus(string.format("👋 %s keluar", player.DisplayName), Color3.fromRGB(255, 200, 100), 3)
+end)
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == Enum.KeyCode.Return or input.KeyCode == Enum.KeyCode.KeypadEnter then
+        if SearchBox:IsFocused() then TeleportButton.MouseButton1Click:Fire() end
+    elseif input.KeyCode == Enum.KeyCode.F5 then
+        RefreshButton.MouseButton1Click:Fire()
+    end
+end)
+
+--// Initialize
+UpdatePlayerList("")
+StartAutoUpdate()
+
+local function Cleanup()
+    if updateLoopThread then task.cancel(updateLoopThread) end
+    if searchDebounceThread then task.cancel(searchDebounceThread) end
+end
+
+ScreenGui.AncestryChanged:Connect(function(_, parent)
+    if not parent then
+        Cleanup()
+    end
+end)
+
+print("🚀 Advanced Teleport GUI v2.2 loaded successfully!")
+ShowStatus("GUI siap! F5 untuk refresh, Enter untuk teleport.", Color3.fromRGB(100, 255, 100), 6)
