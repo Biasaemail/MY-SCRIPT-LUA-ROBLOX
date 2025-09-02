@@ -1,0 +1,375 @@
+-- [[ Skrip Teleport Lokasi v1.1 - Dibuat oleh Gemini ]]
+-- Deskripsi: GUI teleportasi cerdas yang berhenti saat mati dan dapat melanjutkan dari checkpoint terdekat.
+-- Didesain agar ringkas, efisien, dan ramah untuk mobile.
+
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+--// Variables
+local Player = Players.LocalPlayer
+local PlayerGui = Player:WaitForChild("PlayerGui")
+local isTeleportingAll = false
+local teleportLocations = {}
+
+--// Configuration
+local CONFIG = {
+    TELEPORT_OFFSET = Vector3.new(0, 4, 0),
+    TELEPORT_RETRY_DELAY = 0.2,
+    MAX_TELEPORT_ATTEMPTS = 3,
+    TELEPORT_ALL_DELAY = 0.75,
+    RESUME_DISTANCE_THRESHOLD = 50, -- Jarak maksimum (dalam stud) untuk mendeteksi checkpoint terdekat.
+}
+
+--// GUI Creation (Tidak ada perubahan signifikan pada tampilan)
+local ScreenGui = Instance.new("ScreenGui")
+local MainFrame = Instance.new("Frame")
+local UICorner = Instance.new("UICorner")
+local Title = Instance.new("TextLabel")
+local LocationList = Instance.new("ScrollingFrame")
+local UIListLayout = Instance.new("UIListLayout")
+local TeleportAllButton = Instance.new("TextButton")
+local RefreshButton = Instance.new("TextButton")
+local StatusLabel = Instance.new("TextLabel")
+
+-- GUI Setup
+ScreenGui.Name = "LocationTeleportGUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+MainFrame.Name = "MainFrame"
+MainFrame.Parent = ScreenGui
+MainFrame.BackgroundColor3 = Color3.fromRGB(28, 28, 32)
+MainFrame.BorderColor3 = Color3.fromRGB(80, 160, 255)
+MainFrame.BorderSizePixel = 1
+MainFrame.Position = UDim2.new(0.02, 0, 0.5, -150)
+MainFrame.Size = UDim2.new(0, 200, 0, 300)
+MainFrame.Active = true
+MainFrame.Draggable = true
+
+UICorner.CornerRadius = UDim.new(0, 8)
+UICorner.Parent = MainFrame
+
+Title.Name = "Title"
+Title.Parent = MainFrame
+Title.BackgroundTransparency = 1
+Title.Position = UDim2.new(0, 0, 0.02, 0)
+Title.Size = UDim2.new(0.75, 0, 0.1, 0)
+Title.Font = Enum.Font.GothamBold
+Title.Text = "🚀 Teleport Lokasi"
+Title.TextColor3 = Color3.fromRGB(100, 200, 255)
+Title.TextSize = 16
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.TextOffset = Vector2.new(10, 0)
+
+RefreshButton.Name = "RefreshButton"
+RefreshButton.Parent = MainFrame
+RefreshButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+RefreshButton.Position = UDim2.new(0.75, -5, 0.03, 0)
+RefreshButton.Size = UDim2.new(0.2, 0, 0.08, 0)
+RefreshButton.Font = Enum.Font.GothamBold
+RefreshButton.Text = "🔄"
+RefreshButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+RefreshButton.TextSize = 18
+local refreshBtnCorner = Instance.new("UICorner")
+refreshBtnCorner.CornerRadius = UDim.new(0, 6)
+refreshBtnCorner.Parent = RefreshButton
+
+LocationList.Name = "LocationList"
+LocationList.Parent = MainFrame
+LocationList.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+LocationList.Position = UDim2.new(0.05, 0, 0.15, 0)
+LocationList.Size = UDim2.new(0.9, 0, 0.65, 0)
+LocationList.CanvasSize = UDim2.new(0, 0, 0, 0)
+LocationList.ScrollBarThickness = 5
+LocationList.BorderSizePixel = 0
+local locationListCorner = Instance.new("UICorner")
+locationListCorner.CornerRadius = UDim.new(0, 8)
+locationListCorner.Parent = LocationList
+
+UIListLayout.Parent = LocationList
+UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+UIListLayout.Padding = UDim.new(0, 4)
+UIListLayout.FillDirection = Enum.FillDirection.Vertical
+UIListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+
+TeleportAllButton.Name = "TeleportAllButton"
+TeleportAllButton.Parent = MainFrame
+TeleportAllButton.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
+TeleportAllButton.Position = UDim2.new(0.05, 0, 0.82, 0)
+TeleportAllButton.Size = UDim2.new(0.9, 0, 0.12, 0)
+TeleportAllButton.Font = Enum.Font.GothamBold
+TeleportAllButton.Text = "🎯 TELEPORT ALL"
+TeleportAllButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+TeleportAllButton.TextSize = 14
+local teleportAllBtnCorner = Instance.new("UICorner")
+teleportAllBtnCorner.CornerRadius = UDim.new(0, 8)
+teleportAllBtnCorner.Parent = TeleportAllButton
+
+StatusLabel.Name = "StatusLabel"
+StatusLabel.Parent = MainFrame
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.Position = UDim2.new(0.05, 0, 0.94, 0)
+StatusLabel.Size = UDim2.new(0.9, 0, 0.06, 0)
+StatusLabel.Font = Enum.Font.Gotham
+StatusLabel.Text = "✅ Siap digunakan"
+StatusLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+StatusLabel.TextSize = 11
+StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+ScreenGui.Parent = PlayerGui
+
+--// Utility Functions
+local function ShowStatus(message, color, duration, isError)
+    local prefix = isError and "❌ " or (color == Color3.fromRGB(100, 255, 100) and "✅ " or "ℹ️ ")
+    StatusLabel.Text = prefix .. message
+    StatusLabel.TextColor3 = color or Color3.fromRGB(255, 255, 255)
+    
+    task.delay(duration or 3, function()
+        if StatusLabel and StatusLabel.Text == (prefix .. message) then
+            StatusLabel.Text = "⏳ Menunggu aksi..."
+            StatusLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+        end
+    end)
+end
+
+local function CreateHoverEffect(button, colorIntensity)
+    local originalColor = button.BackgroundColor3
+    button.MouseEnter:Connect(function()
+        TweenService:Create(button, TweenInfo.new(0.2), {
+            BackgroundColor3 = originalColor:Lerp(Color3.new(1,1,1), colorIntensity or 0.2)
+        }):Play()
+    end)
+    button.MouseLeave:Connect(function()
+        TweenService:Create(button, TweenInfo.new(0.2), {
+            BackgroundColor3 = originalColor
+        }):Play()
+    end)
+end
+
+local function ValidateCharacter(character)
+    if not character or not character.Parent then
+        return false, "Karakter Anda tidak ditemukan."
+    end
+    local humanoid = character:FindFirstChild("Humanoid")
+    if not humanoid or humanoid.Health <= 0 then
+        return false, "Karakter Anda mati atau tidak valid."
+    end
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then
+        return false, "HumanoidRootPart tidak ditemukan."
+    end
+    if humanoid.Sit then
+        humanoid.Sit = false
+        task.wait(0.1)
+    end
+    return true, "Karakter valid", rootPart
+end
+
+--// Core Logic
+local function FindTeleportLocations()
+    local foundLocations = {}
+    local checkpointFolder = workspace:FindFirstChild("Checkpoint")
+    if checkpointFolder then
+        for i = 1, 30 do
+            local cp = checkpointFolder:FindFirstChild("Checkpoint" .. i)
+            if cp then
+                table.insert(foundLocations, {Name = "Checkpoint " .. i, Target = cp, Index = i})
+            else
+                break
+            end
+        end
+    end
+    
+    local summitPart = workspace:FindFirstChild("summit")
+    if summitPart then
+        table.insert(foundLocations, {Name = "Summit", Target = summitPart, Index = #foundLocations + 1})
+    end
+    
+    return foundLocations
+end
+
+local function TeleportToLocation(targetPart)
+    local localCharacter = Player.Character
+    local isValid, message, localRoot = ValidateCharacter(localCharacter)
+    
+    if not isValid then
+        ShowStatus(message, Color3.fromRGB(255, 100, 100), 3, true)
+        return false
+    end
+    
+    if not targetPart or not targetPart:IsA("BasePart") then
+        ShowStatus("Lokasi target tidak valid.", Color3.fromRGB(255, 100, 100), 3, true)
+        return false
+    end
+    
+    local success = false
+    local attempts = 0
+    
+    while attempts < CONFIG.MAX_TELEPORT_ATTEMPTS and not success do
+        attempts = attempts + 1
+        local teleportSuccess, errorMessage = pcall(function()
+            local targetCFrame = targetPart.CFrame
+            localRoot.CFrame = targetCFrame + CONFIG.TELEPORT_OFFSET
+            task.wait(0.1)
+            local distance = (localRoot.Position - targetPart.Position).Magnitude
+            if distance > 100 then
+                error("Gagal mendekati target.")
+            end
+        end)
+        
+        if teleportSuccess then
+            success = true
+        else
+            task.wait(CONFIG.TELEPORT_RETRY_DELAY)
+        end
+    end
+    
+    return success
+end
+
+local function UpdateLocationList()
+    for _, child in ipairs(LocationList:GetChildren()) do
+        if child:IsA("TextButton") then
+            child:Destroy()
+        end
+    end
+    
+    teleportLocations = FindTeleportLocations()
+    
+    if #teleportLocations == 0 then
+        ShowStatus("Tidak ada lokasi teleport ditemukan.", Color3.fromRGB(255, 150, 0), 5)
+        return
+    end
+    
+    for _, locData in ipairs(teleportLocations) do
+        local locButton = Instance.new("TextButton")
+        locButton.Name = locData.Name
+        locButton.Parent = LocationList
+        locButton.Size = UDim2.new(1, -10, 0, 30)
+        locButton.BackgroundColor3 = Color3.fromRGB(55, 55, 65)
+        locButton.Font = Enum.Font.Gotham
+        locButton.Text = locData.Name
+        locButton.TextColor3 = Color3.fromRGB(220, 220, 220)
+        locButton.TextSize = 14
+        
+        local btnCorner = Instance.new("UICorner")
+        btnCorner.CornerRadius = UDim.new(0, 6)
+        btnCorner.Parent = locButton
+        
+        CreateHoverEffect(locButton, 0.25)
+        
+        locButton.MouseButton1Click:Connect(function()
+            if isTeleportingAll then
+                ShowStatus("Sedang menjalankan Teleport All...", Color3.fromRGB(255, 200, 0), 2)
+                return
+            end
+            
+            ShowStatus("Teleport ke " .. locData.Name .. "...", Color3.fromRGB(150, 200, 255), 2)
+            local success = TeleportToLocation(locData.Target)
+            if success then
+                ShowStatus("✨ Berhasil teleport ke " .. locData.Name, Color3.fromRGB(100, 255, 100), 3)
+            else
+                ShowStatus("❌ Gagal teleport ke " .. locData.Name, Color3.fromRGB(255, 100, 100), 3, true)
+            end
+        end)
+    end
+    
+    LocationList.CanvasSize = UDim2.new(0, 0, 0, UIListLayout.AbsoluteContentSize.Y + 5)
+    ShowStatus("Daftar lokasi diperbarui.", Color3.fromRGB(100, 255, 100), 2)
+end
+
+--// Event Connections
+RefreshButton.MouseButton1Click:Connect(function()
+    if isTeleportingAll then return end
+    UpdateLocationList()
+end)
+
+TeleportAllButton.MouseButton1Click:Connect(function()
+    if isTeleportingAll then
+        ShowStatus("Proses Teleport All sudah berjalan.", Color3.fromRGB(255, 200, 0), 2)
+        return
+    end
+    
+    local checkpointsOnly = {}
+    for _, loc in ipairs(teleportLocations) do
+        if loc.Name:match("Checkpoint") then
+            table.insert(checkpointsOnly, loc)
+        end
+    end
+    
+    if #checkpointsOnly == 0 then
+        ShowStatus("Tidak ada checkpoint untuk Teleport All.", Color3.fromRGB(255, 150, 0), 3)
+        return
+    end
+    
+    isTeleportingAll = true
+    TeleportAllButton.Text = "BERJALAN..."
+    TeleportAllButton.BackgroundColor3 = Color3.fromRGB(200, 100, 0)
+    
+    task.spawn(function()
+        -- --- PERBAIKAN: Logika untuk melanjutkan dari checkpoint terdekat ---
+        local startIndex = 1
+        local isValid, _, rootPart = ValidateCharacter(Player.Character)
+        if isValid then
+            local playerPos = rootPart.Position
+            local closestDist = math.huge
+            local closestIndex = -1
+
+            for i, locData in ipairs(checkpointsOnly) do
+                local dist = (playerPos - locData.Target.Position).Magnitude
+                if dist < closestDist then
+                    closestDist = dist
+                    closestIndex = i
+                end
+            end
+
+            if closestIndex ~= -1 and closestDist <= CONFIG.RESUME_DISTANCE_THRESHOLD then
+                startIndex = closestIndex + 1
+                ShowStatus("Melanjutkan dari Checkpoint " .. startIndex, Color3.fromRGB(100, 200, 255), 3)
+            end
+        end
+        -- --- AKHIR PERBAIKAN ---
+
+        for i = startIndex, #checkpointsOnly do
+            local locData = checkpointsOnly[i]
+            ShowStatus(string.format("Menuju %s (%d/%d)", locData.Name, i, #checkpointsOnly), Color3.fromRGB(150, 200, 255), CONFIG.TELEPORT_ALL_DELAY)
+            
+            local success = TeleportToLocation(locData.Target)
+            if not success then
+                ShowStatus("Gagal ke " .. locData.Name .. ", menghentikan proses.", Color3.fromRGB(255, 100, 100), 4, true)
+                break
+            end
+            
+            task.wait(CONFIG.TELEPORT_ALL_DELAY)
+            
+            -- --- PERBAIKAN: Cek jika karakter mati setelah teleport ---
+            local isStillAlive = ValidateCharacter(Player.Character)
+            if not isStillAlive then
+                ShowStatus("Proses dihentikan karena karakter mati.", Color3.fromRGB(255, 100, 100), 4, true)
+                break
+            end
+            -- --- AKHIR PERBAIKAN ---
+        end
+        
+        ShowStatus("✅ Teleport All selesai!", Color3.fromRGB(100, 255, 100), 4)
+        isTeleportingAll = false
+        TeleportAllButton.Text = "🎯 TELEPORT ALL"
+        TeleportAllButton.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
+    end)
+end)
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == Enum.KeyCode.F5 then
+        RefreshButton.MouseButton1Click:Fire()
+    end
+end)
+
+--// Initialize
+CreateHoverEffect(TeleportAllButton, 0.15)
+CreateHoverEffect(RefreshButton, 0.25)
+UpdateLocationList()
+
+print("🚀 Location Teleport GUI v1.1 (Smart) loaded successfully!")
