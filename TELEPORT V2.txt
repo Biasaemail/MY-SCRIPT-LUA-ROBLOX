@@ -20,9 +20,9 @@ local updateConnection = nil
 local CONFIG = {
     TELEPORT_OFFSET = Vector3.new(0, 4, 0), -- Offset saat teleport (sedikit dikurangi)
     MAX_TELEPORT_ATTEMPTS = 5,
-    TELEPORT_RETRY_DELAY = 0.2,
+    TELEPORT_RETRY_DELAY = 0.1,
     SEARCH_MIN_LENGTH = 1,
-    COOLDOWN_TIME = 1, -- Cooldown 1 detik
+    COOLDOWN_TIME = 0.1, -- Cooldown 1 detik
     TOGGLE_KEY = Enum.KeyCode.F9 -- Hotkey untuk menampilkan/menyembunyikan GUI
 }
 
