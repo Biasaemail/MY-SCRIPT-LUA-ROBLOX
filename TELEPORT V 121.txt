@@ -1,0 +1,543 @@
+-- [[ Skrip Advanced Teleport v2.2 - Disesuaikan untuk Mobile oleh Gemini ]]
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+
+--// Variables
+local Player = Players.LocalPlayer
+local PlayerGui = Player:WaitForChild("PlayerGui")
+local searchDebounceTime = 0.15
+local searchDebounceThread = nil
+local selectedPlayerName = nil
+local teleportCooldown = false
+local lastSearchQuery = nil
+local cachedPlayers = {}
+local updateConnection = nil
+
+--// Configuration
+local CONFIG = {
+    TELEPORT_OFFSET = Vector3.new(0, 5, 0),
+    MAX_TELEPORT_ATTEMPTS = 5,
+    TELEPORT_RETRY_DELAY = 0.2,
+    SEARCH_MIN_LENGTH = 1,
+    COOLDOWN_TIME = 1, -- Cooldown 1 detik
+}
+
+--// GUI Creation (Disesuaikan untuk Mobile)
+local ScreenGui = Instance.new("ScreenGui")
+local MainFrame = Instance.new("Frame")
+local UIAspectRatioConstraint = Instance.new("UIAspectRatioConstraint") -- Untuk menjaga bentuk GUI
+local UICorner = Instance.new("UICorner")
+local Title = Instance.new("TextLabel")
+local SearchBox = Instance.new("TextBox")
+local PlayerList = Instance.new("ScrollingFrame")
+local UIListLayout = Instance.new("UIListLayout")
+local TeleportButton = Instance.new("TextButton")
+local StatusLabel = Instance.new("TextLabel")
+local RefreshButton = Instance.new("TextButton")
+
+-- GUI Setup
+ScreenGui.Name = "AdvancedTeleportGUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+MainFrame.Name = "MainFrame"
+MainFrame.Parent = ScreenGui
+MainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+MainFrame.AnchorPoint = Vector2.new(0.5, 0.5) -- Penting untuk centering
+MainFrame.Position = UDim2.new(0.5, 0, 0.5, 0) -- Tengah layar
+MainFrame.Size = UDim2.new(0.85, 0, 0.7, 0) -- Ukuran berbasis persentase, lebih besar di mode landscape
+MainFrame.Active = true
+MainFrame.Draggable = true
+MainFrame.Visible = true
+
+-- Menjaga rasio aspek agar tidak terlalu lebar/tinggi
+UIAspectRatioConstraint.Parent = MainFrame
+UIAspectRatioConstraint.AspectRatio = 1.2 -- Rasio Lebar/Tinggi
+UIAspectRatioConstraint.DominantAxis = Enum.DominantAxis.Width
+
+UICorner.Parent = MainFrame
+UICorner.CornerRadius = UDim.new(0.04, 0) -- Corner radius responsif
+
+Title.Name = "Title"
+Title.Parent = MainFrame
+Title.BackgroundTransparency = 1
+Title.Position = UDim2.new(0.05, 0, 0.02, 0)
+Title.Size = UDim2.new(0.9, 0, 0.08, 0)
+Title.Font = Enum.Font.GothamBold
+Title.Text = "🚀 Adv Teleport v2.2"
+Title.TextColor3 = Color3.fromRGB(100, 200, 255)
+Title.TextSize = 16
+
+SearchBox.Name = "SearchBox"
+SearchBox.Parent = MainFrame
+SearchBox.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+SearchBox.Position = UDim2.new(0.05, 0, 0.12, 0)
+SearchBox.Size = UDim2.new(0.75, 0, 0.1, 0) -- Sedikit lebih tinggi untuk tap
+SearchBox.Font = Enum.Font.Gotham
+SearchBox.PlaceholderText = "🔍 Cari pemain..."
+SearchBox.Text = ""
+SearchBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+SearchBox.TextSize = 14
+SearchBox.ClearTextOnFocus = true
+local searchBoxCorner = Instance.new("UICorner")
+searchBoxCorner.CornerRadius = UDim.new(0.2, 0)
+searchBoxCorner.Parent = SearchBox
+
+RefreshButton.Name = "RefreshButton"
+RefreshButton.Parent = MainFrame
+RefreshButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+RefreshButton.Position = UDim2.new(0.82, 0, 0.12, 0)
+RefreshButton.Size = UDim2.new(0.13, 0, 0.1, 0)
+RefreshButton.Font = Enum.Font.GothamBold
+RefreshButton.Text = "🔄"
+RefreshButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+RefreshButton.TextSize = 16
+local refreshBtnCorner = Instance.new("UICorner")
+refreshBtnCorner.CornerRadius = UDim.new(0.2, 0)
+refreshBtnCorner.Parent = RefreshButton
+
+PlayerList.Name = "PlayerList"
+PlayerList.Parent = MainFrame
+PlayerList.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+PlayerList.Position = UDim2.new(0.05, 0, 0.24, 0)
+PlayerList.Size = UDim2.new(0.9, 0, 0.48, 0)
+PlayerList.CanvasSize = UDim2.new(0, 0, 0, 0)
+PlayerList.ScrollBarThickness = 8 -- Sedikit lebih tebal untuk mobile
+PlayerList.ScrollingEnabled = true
+PlayerList.BorderSizePixel = 0
+local playerListCorner = Instance.new("UICorner")
+playerListCorner.CornerRadius = UDim.new(0.03, 0)
+playerListCorner.Parent = PlayerList
+
+UIListLayout.Parent = PlayerList
+UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+UIListLayout.Padding = UDim.new(0, 3)
+
+TeleportButton.Name = "TeleportButton"
+TeleportButton.Parent = MainFrame
+TeleportButton.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
+TeleportButton.Position = UDim2.new(0.05, 0, 0.74, 0)
+TeleportButton.Size = UDim2.new(0.9, 0, 0.12, 0) -- Lebih besar agar mudah ditekan
+TeleportButton.Font = Enum.Font.GothamBold
+TeleportButton.Text = "🎯 TELEPORT"
+TeleportButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+TeleportButton.TextSize = 16
+local teleportBtnCorner = Instance.new("UICorner")
+teleportBtnCorner.CornerRadius = UDim.new(0.15, 0)
+teleportBtnCorner.Parent = TeleportButton
+
+StatusLabel.Name = "StatusLabel"
+StatusLabel.Parent = MainFrame
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.Position = UDim2.new(0.05, 0, 0.87, 0)
+StatusLabel.Size = UDim2.new(0.9, 0, 0.12, 0)
+StatusLabel.Font = Enum.Font.Gotham
+StatusLabel.Text = "✅ GUI siap"
+StatusLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+StatusLabel.TextSize = 12
+StatusLabel.TextWrapped = true
+StatusLabel.TextYAlignment = Enum.TextYAlignment.Top
+
+ScreenGui.Parent = PlayerGui
+
+--// Advanced Utility Functions (Tidak ada perubahan di bagian ini)
+local function ShowStatus(message, color, duration, isError)
+    local prefix = isError and "❌ " or (color == Color3.fromRGB(100, 255, 100) and "✅ " or "ℹ️ ")
+    StatusLabel.Text = prefix .. message
+    StatusLabel.TextColor3 = color or Color3.fromRGB(255, 255, 255)
+    
+    task.delay(duration or 4, function()
+        if StatusLabel and StatusLabel.Text == (prefix .. message) then
+            StatusLabel.Text = "⏳ Menunggu aksi..."
+            StatusLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+        end
+    end)
+end
+
+local function AdvancedGetPlayer(searchTerm)
+    if not searchTerm or searchTerm == "" then return nil end
+    
+    searchTerm = searchTerm:lower():gsub("%s+", "")
+    local results = {}
+    
+    for _, playerObj in ipairs(Players:GetPlayers()) do
+        if playerObj ~= Player then
+            local name = playerObj.Name:lower():gsub("%s+", "")
+            local displayName = playerObj.DisplayName:lower():gsub("%s+", "")
+            
+            if name == searchTerm or displayName == searchTerm then
+                return playerObj
+            end
+            
+            if name:match("^" .. searchTerm) or displayName:match("^" .. searchTerm) then
+                table.insert(results, {player = playerObj, priority = 1})
+            elseif name:match(searchTerm) or displayName:match(searchTerm) then
+                table.insert(results, {player = playerObj, priority = 2})
+            end
+        end
+    end
+    
+    if #results > 0 then
+        table.sort(results, function(a, b) return a.priority < b.priority end)
+        return results[1].player
+    end
+    
+    return nil
+end
+
+local function ValidatePlayer(targetPlayer)
+    if not targetPlayer then
+        return false, "Player tidak ditemukan"
+    end
+    
+    if not targetPlayer.Parent then
+        return false, "Player sudah keluar"
+    end
+    
+    if targetPlayer == Player then
+        return false, "Tidak bisa ke diri sendiri"
+    end
+    
+    return true, "Player valid"
+end
+
+local function ValidateCharacter(character, playerName)
+    if not character then
+        return false, playerName .. " belum spawn"
+    end
+    
+    if not character.Parent then
+        return false, playerName .. " character tidak valid"
+    end
+    
+    local humanoid = character:FindFirstChild("Humanoid")
+    if not humanoid then
+        return false, playerName .. " tidak memiliki Humanoid"
+    end
+    
+    if humanoid.Health <= 0 then
+        return false, playerName .. " sudah mati"
+    end
+    
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then
+        return false, playerName .. " tidak memiliki HumanoidRootPart"
+    end
+    
+    return true, "Character valid", rootPart
+end
+
+local function UpdatePlayerCache()
+    cachedPlayers = {}
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= Player then
+            cachedPlayers[player.Name:lower()] = player
+            cachedPlayers[player.DisplayName:lower()] = player
+        end
+    end
+end
+
+-- Update player list dengan optimasi
+local function UpdatePlayerList(searchText)
+    local currentSearchText = searchText or ""
+    if currentSearchText == lastSearchQuery and currentSearchText ~= "" then 
+        return 
+    end
+    lastSearchQuery = currentSearchText
+    
+    local lowerSearchText = currentSearchText:lower()
+    
+    for _, child in ipairs(PlayerList:GetChildren()) do
+        if child:IsA("TextButton") then
+            child:Destroy()
+        end
+    end
+
+    local playersToShow = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= Player then
+            local name = p.Name:lower()
+            local displayName = p.DisplayName:lower()
+            
+            if lowerSearchText == "" or 
+               name:match(lowerSearchText) or 
+               displayName:match(lowerSearchText) then
+                
+                local hasValidChar = p.Character and 
+                                   p.Character:FindFirstChild("HumanoidRootPart") and
+                                   p.Character:FindFirstChild("Humanoid") and
+                                   p.Character.Humanoid.Health > 0
+                
+                table.insert(playersToShow, {
+                    player = p,
+                    hasValidChar = hasValidChar
+                })
+            end
+        end
+    end
+
+    table.sort(playersToShow, function(a, b)
+        if a.hasValidChar ~= b.hasValidChar then
+            return a.hasValidChar
+        end
+        return a.player.DisplayName:lower() < b.player.DisplayName:lower()
+    end)
+
+    for i, data in ipairs(playersToShow) do
+        local p = data.player
+        local playerButton = Instance.new("TextButton")
+        
+        local statusIcon = data.hasValidChar and "🟢" or "🔴"
+        
+        playerButton.Size = UDim2.new(1, -8, 0, 30)
+        playerButton.BackgroundColor3 = data.hasValidChar and 
+            Color3.fromRGB(45, 70, 45) or Color3.fromRGB(70, 45, 45)
+        playerButton.Text = string.format("%s %s (@%s)", 
+            statusIcon, p.DisplayName, p.Name)
+        playerButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+        playerButton.TextSize = 13
+        playerButton.Font = Enum.Font.Gotham
+        playerButton.TextXAlignment = Enum.TextXAlignment.Left
+        playerButton.Parent = PlayerList
+		playerButton.TextPadding = 10
+
+        local btnCorner = Instance.new("UICorner")
+        btnCorner.CornerRadius = UDim.new(0.2, 0)
+        btnCorner.Parent = playerButton
+
+        local function CreateAdvancedHoverEffect(button)
+            local originalColor = button.BackgroundColor3
+            button.MouseEnter:Connect(function()
+                TweenService:Create(button, TweenInfo.new(0.15), {
+                    BackgroundColor3 = originalColor:Lerp(Color3.new(1,1,1), 0.15)
+                }):Play()
+            end)
+            button.MouseLeave:Connect(function()
+                TweenService:Create(button, TweenInfo.new(0.15), {
+                    BackgroundColor3 = originalColor
+                }):Play()
+            end)
+        end
+        CreateAdvancedHoverEffect(playerButton)
+
+        playerButton.MouseButton1Click:Connect(function()
+            SearchBox.Text = p.Name
+            selectedPlayerName = p.Name
+            ShowStatus(string.format("Target: %s (%s)", 
+                p.DisplayName, data.hasValidChar and "Ready" or "Not Ready"), 
+                Color3.fromRGB(150, 200, 255), 2)
+        end)
+    end
+    
+    PlayerList.CanvasSize = UDim2.new(0, 0, 0, UIListLayout.AbsoluteContentSize.Y + 10)
+end
+
+--// Advanced Teleport Function
+local function AdvancedTeleportToPlayer(targetPlayer)
+    if teleportCooldown then
+        ShowStatus("Tunggu " .. CONFIG.COOLDOWN_TIME .. " detik", 
+            Color3.fromRGB(255, 200, 0), 2)
+        return
+    end
+    
+    teleportCooldown = true
+    task.delay(CONFIG.COOLDOWN_TIME, function() teleportCooldown = false end)
+    
+    local localCharacter = Player.Character
+    local isValid, message, localRoot = ValidateCharacter(localCharacter, "Anda")
+    
+    if isValid and localCharacter:FindFirstChildOfClass("Humanoid").Sit then
+        localCharacter:FindFirstChildOfClass("Humanoid").Sit = false
+        ShowStatus("ℹ️ Anda sedang duduk, otomatis berdiri...", Color3.fromRGB(150, 200, 255), 1.5)
+        task.wait(0.2)
+    end
+
+    if not isValid then
+        ShowStatus(message, Color3.fromRGB(255, 100, 100), 3, true)
+        return
+    end
+    
+    local isPlayerValid, playerMessage = ValidatePlayer(targetPlayer)
+    if not isPlayerValid then
+        ShowStatus(playerMessage, Color3.fromRGB(255, 100, 100), 3, true)
+        return
+    end
+    
+    local attempts = 0
+    local success = false
+    
+    ShowStatus(string.format("Teleport ke %s...", targetPlayer.DisplayName), 
+        Color3.fromRGB(255, 255, 100), 2)
+    
+    while attempts < CONFIG.MAX_TELEPORT_ATTEMPTS and not success do
+        attempts = attempts + 1
+        
+        local targetCharacter = targetPlayer.Character
+        local isTargetValid, targetMessage, targetRoot = ValidateCharacter(targetCharacter, targetPlayer.DisplayName)
+        
+        if not isTargetValid then
+            ShowStatus(string.format("Coba %d: %s", attempts, targetMessage), 
+                Color3.fromRGB(255, 150, 0), 2)
+            task.wait(CONFIG.TELEPORT_RETRY_DELAY)
+            continue
+        end
+        
+        local teleportSuccess = pcall(function()
+            local targetCFrame = targetRoot.CFrame
+            local offset = CONFIG.TELEPORT_OFFSET
+            local randomOffset = Vector3.new(math.random(-2, 2), 0, math.random(-2, 2))
+            localRoot.CFrame = targetCFrame + offset + randomOffset
+            
+            task.wait(0.1)
+            local distance = (localRoot.Position - targetRoot.Position).Magnitude
+            if distance > 50 then
+                error("Jarak teleport terlalu jauh")
+            end
+        end)
+        
+        if teleportSuccess then
+            success = true
+            ShowStatus(string.format("✨ Berhasil ke %s! (Coba %d)", 
+                targetPlayer.DisplayName, attempts), 
+                Color3.fromRGB(100, 255, 100), 4)
+        else
+            ShowStatus(string.format("Coba %d gagal, mencoba lagi...", attempts), 
+                Color3.fromRGB(255, 200, 0), 1)
+            task.wait(CONFIG.TELEPORT_RETRY_DELAY)
+        end
+    end
+    
+    if not success then
+        ShowStatus(string.format("❌ Gagal setelah %d percobaan ke %s", 
+            CONFIG.MAX_TELEPORT_ATTEMPTS, targetPlayer.DisplayName), 
+            Color3.fromRGB(255, 100, 100), 5, true)
+    end
+end
+
+--// Event Connections dengan optimasi
+SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
+    local searchText = SearchBox.Text
+    
+    if searchDebounceThread then 
+        task.cancel(searchDebounceThread) 
+    end
+    
+    searchDebounceThread = task.delay(searchDebounceTime, function()
+        if SearchBox and SearchBox.Text == searchText then
+            UpdatePlayerList(searchText)
+        end
+        searchDebounceThread = nil
+    end)
+end)
+
+TeleportButton.MouseButton1Click:Connect(function()
+    local targetName = SearchBox.Text:gsub("%s+", "")
+    
+    if targetName == "" then
+        ShowStatus("Masukkan nama pemain", Color3.fromRGB(255, 150, 0), 3)
+        return
+    end
+
+    local targetPlayer = AdvancedGetPlayer(targetName)
+    if targetPlayer then
+        AdvancedTeleportToPlayer(targetPlayer)
+    else
+        ShowStatus(string.format("Pemain '%s' tidak ditemukan", targetName), 
+            Color3.fromRGB(255, 100, 100), 4, true)
+    end
+end)
+
+RefreshButton.MouseButton1Click:Connect(function()
+    lastSearchQuery = nil
+    UpdatePlayerCache()
+    UpdatePlayerList(SearchBox.Text)
+    ShowStatus("📋 Daftar pemain diperbarui", Color3.fromRGB(100, 255, 100), 2)
+end)
+
+local function CreateAdvancedHoverEffect(button, colorIntensity)
+    local originalColor = button.BackgroundColor3
+    button.MouseEnter:Connect(function()
+        TweenService:Create(button, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {
+            BackgroundColor3 = originalColor:Lerp(Color3.new(1,1,1), colorIntensity or 0.2)
+        }):Play()
+    end)
+    button.MouseLeave:Connect(function()
+        TweenService:Create(button, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {
+            BackgroundColor3 = originalColor
+        }):Play()
+    end)
+end
+
+CreateAdvancedHoverEffect(TeleportButton, 0.15)
+CreateAdvancedHoverEffect(RefreshButton, 0.25)
+
+--// Auto-update system (Disederhanakan)
+local autoUpdateTimer = 0
+local function StartAutoUpdate()
+    if updateConnection then updateConnection:Disconnect() end
+    
+    updateConnection = RunService.Heartbeat:Connect(function(dt)
+        autoUpdateTimer = autoUpdateTimer + dt
+        if autoUpdateTimer >= 5 then -- Update setiap 5 detik
+            autoUpdateTimer = 0
+            if MainFrame.Visible then
+                UpdatePlayerList(SearchBox.Text)
+            end
+        end
+    end)
+end
+
+-- Player events
+Players.PlayerAdded:Connect(function(player)
+    task.wait(1) 
+    UpdatePlayerCache()
+    UpdatePlayerList(SearchBox.Text)
+    ShowStatus(string.format("🎮 %s bergabung", player.DisplayName), 
+        Color3.fromRGB(100, 255, 100), 3)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    UpdatePlayerCache()
+    if SearchBox.Text:lower() == player.Name:lower() then 
+        SearchBox.Text = ""
+        selectedPlayerName = nil
+    end
+    UpdatePlayerList(SearchBox.Text)
+    ShowStatus(string.format("👋 %s keluar", player.DisplayName), 
+        Color3.fromRGB(255, 200, 100), 3)
+end)
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    
+    if input.KeyCode == Enum.KeyCode.Return or input.KeyCode == Enum.KeyCode.KeypadEnter then
+        if SearchBox:IsFocused() then
+            TeleportButton.MouseButton1Click:Fire()
+        end
+    elseif input.KeyCode == Enum.KeyCode.F5 then
+        RefreshButton.MouseButton1Click:Fire()
+    end
+end)
+
+--// Initialize
+UpdatePlayerCache()
+UpdatePlayerList("")
+StartAutoUpdate()
+
+local function Cleanup()
+    if updateConnection then updateConnection:Disconnect() end
+    if searchDebounceThread then task.cancel(searchDebounceThread) end
+end
+
+ScreenGui.AncestryChanged:Connect(function(_, parent)
+    if not parent then
+        Cleanup()
+    end
+end)
+
+print("🚀 Advanced Teleport GUI v2.2 (Mobile Edition) loaded successfully!")
+ShowStatus("🎯 GUI Siap! (F5 Refresh, Enter Teleport)", 
+    Color3.fromRGB(100, 255, 100), 6)
