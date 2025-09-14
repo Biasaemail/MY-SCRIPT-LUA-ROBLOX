@@ -1,0 +1,76 @@
+-- ☀️ Smart & Efficient Daylight Script
+-- Client-side only (hanya untuk LocalPlayer)
+
+local Lighting = game:GetService("Lighting")
+local Camera = workspace:WaitForChild("Camera")
+
+-- Konfigurasi siang cerah
+local TARGET_SETTINGS = {
+	ClockTime = 13.5,
+	Brightness = 2.0,
+	Ambient = Color3.fromRGB(128, 128, 128),
+	OutdoorAmbient = Color3.fromRGB(128, 128, 128),
+	FogEnd = 1000000,
+	FogStart = 999000
+}
+
+-- Efek yang harus dinonaktifkan
+local EFFECTS_TO_DISABLE = {
+	"ColorCorrectionEffect",
+	"BloomEffect",
+	"BlurEffect",
+	"SunRaysEffect",
+	"DepthOfFieldEffect",
+	"Atmosphere"
+}
+
+-- Terapkan pengaturan
+local function forceDaylightSettings()
+	for property, value in pairs(TARGET_SETTINGS) do
+		if Lighting[property] ~= value then
+			Lighting[property] = value
+		end
+	end
+
+	local function disableEffectsIn(parent)
+		for _, effectName in ipairs(EFFECTS_TO_DISABLE) do
+			local effect = parent:FindFirstChildOfClass(effectName)
+			if effect then
+				if effect:IsA("Atmosphere") then
+					effect.Density = 0
+					effect.Haze = 0
+					effect.Glare = 0
+				else
+					effect.Enabled = false
+				end
+			end
+		end
+	end
+
+	disableEffectsIn(Lighting)
+	disableEffectsIn(Camera)
+end
+
+-- Jalankan sekali di awal
+forceDaylightSettings()
+
+-- Awasi perubahan properti penting
+for property, _ in pairs(TARGET_SETTINGS) do
+	Lighting:GetPropertyChangedSignal(property):Connect(forceDaylightSettings)
+end
+
+-- Awasi efek baru yang ditambahkan
+local function onChildAdded(child)
+	for _, effectName in ipairs(EFFECTS_TO_DISABLE) do
+		if child:IsA(effectName) then
+			task.wait()
+			forceDaylightSettings()
+			break
+		end
+	end
+end
+
+Lighting.ChildAdded:Connect(onChildAdded)
+Camera.ChildAdded:Connect(onChildAdded)
+
+print("☀️ Siang cerah aktif untuk LocalPlayer.")
