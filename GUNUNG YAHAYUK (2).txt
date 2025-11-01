@@ -99,17 +99,16 @@ Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 8)
 Instance.new("UIStroke", mainFrame).Color = Theme.Stroke
 
 -- Minimized Frame (The small draggable box)
-local minimizedFrame = Instance.new("TextButton")
+local minimizedFrame = Instance.new("ImageButton") -- Ganti dari TextButton ke ImageButton
 minimizedFrame.Name = "MinimizedFrame"
-minimizedFrame.Size = UDim2.new(0, 40, 0, 40)
+minimizedFrame.Size = UDim2.new(0, 80, 0, 80) -- Diperbesar dari 40x40 menjadi 80x80
 minimizedFrame.BackgroundColor3 = Theme.Background
-minimizedFrame.Text = "P" -- Stands for Pathfinder
-minimizedFrame.Font = Theme.FontBold
-minimizedFrame.TextColor3 = Theme.Text
-minimizedFrame.TextSize = 20
+minimizedFrame.Image = "rbxassetid://5009915812" -- Gunakan decal ID yang diberikan
+minimizedFrame.ScaleType = Enum.ScaleType.Fit -- Agar gambar menyesuaikan
 minimizedFrame.Visible = false -- Hidden by default
 minimizedFrame.Parent = gui
-Instance.new("UICorner", minimizedFrame).CornerRadius = UDim.new(0, 8)
+-- Tetap tambahkan UICorner dan UIStroke
+Instance.new("UICorner", minimizedFrame).CornerRadius = UDim.new(0, 12) -- Corner radius sedikit diperbesar
 Instance.new("UIStroke", minimizedFrame).Color = Theme.Stroke
 
 
