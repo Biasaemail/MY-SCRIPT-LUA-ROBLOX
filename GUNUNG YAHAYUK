@@ -1,12 +1,3 @@
---[[
-Skrip Auto-Pathfinding dengan GUI Kontrol
-- DITINGKATKAN LAGI oleh Dev game roblox
-- Logika Minimize dirombak total: GUI utama disembunyikan dan digantikan oleh
-  sebuah ikon/kotak kecil yang bisa digeser (draggable).
-- Klik pada ikon kecil akan memunculkan kembali GUI utama.
-- Logika inti pathfinding TIDAK BERUBAH sesuai permintaan.
-]]
-
 -- Services
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
@@ -42,9 +33,8 @@ local Theme = {
     -- Animations
     TweenInfoFast = TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
     TweenInfoSmooth = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
 }
-
-
 -- =================================================================
 -- CORE PATHFINDING LOGIC (UNCHANGED AS REQUESTED)
 -- =================================================================
@@ -65,8 +55,8 @@ local checkpoints = {
 local finalWalkPosition = Vector3.new(-622.369629, 902.439697, -493.9375)
 
 -- === KONFIGURASI ===
-local TOTAL_DURATION = 48
-local MAX_SPEED = 28
+local TOTAL_DURATION = 49
+local MAX_SPEED = 27
 local MIN_SEGMENT_DURATION = 0.1
 local COMPLETION_THRESHOLD = 50 -- Jarak untuk menganggap sudah sampai checkpoint (stud)
 
