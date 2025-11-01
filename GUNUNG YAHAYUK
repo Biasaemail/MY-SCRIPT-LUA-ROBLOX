@@ -34,11 +34,9 @@ local Theme = {
     TweenInfoFast = TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
     TweenInfoSmooth = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 
-}
 -- =================================================================
 -- CORE PATHFINDING LOGIC (UNCHANGED AS REQUESTED)
 -- =================================================================
-
 -- Daftar checkpoint (urutan penting!)
 local checkpoints = {
     Vector3.new(-417.4703369140625, 263.22259521484375, 786.6296997070312), -- CP1
