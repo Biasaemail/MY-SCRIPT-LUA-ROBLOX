@@ -1,76 +1,106 @@
--- ☀️ Smart & Efficient Daylight Script
+-- ☀️ Enhanced Daylight Script - No Fog, Full Brightness Anywhere
 -- Client-side only (hanya untuk LocalPlayer)
 
 local Lighting = game:GetService("Lighting")
 local Camera = workspace:WaitForChild("Camera")
+local RunService = game:GetService("RunService")
 
--- Konfigurasi siang cerah
+-- Target daylight settings (bright as 14:00 noon)
 local TARGET_SETTINGS = {
-	ClockTime = 13.5,
-	Brightness = 2.0,
-	Ambient = Color3.fromRGB(128, 128, 128),
-	OutdoorAmbient = Color3.fromRGB(128, 128, 128),
-	FogEnd = 1000000,
-	FogStart = 999000
+    ClockTime = 14, -- 14:00 = 2:00 PM (brightest time)
+    Brightness = 2.0,
+    Ambient = Color3.fromRGB(128, 128, 128),
+    OutdoorAmbient = Color3.fromRGB(128, 128, 128),
+    FogEnd = 1000000, -- Effectively disable fog
+    FogStart = 999000,
+    GlobalShadows = false, -- Remove shadows for maximum brightness
+    ShadowSoftness = 0 -- Reduce shadow softness
 }
 
--- Efek yang harus dinonaktifkan
+-- Effects to disable for maximum brightness
 local EFFECTS_TO_DISABLE = {
-	"ColorCorrectionEffect",
-	"BloomEffect",
-	"BlurEffect",
-	"SunRaysEffect",
-	"DepthOfFieldEffect",
-	"Atmosphere"
+    "ColorCorrectionEffect",
+    "BloomEffect", 
+    "BlurEffect",
+    "SunRaysEffect",
+    "DepthOfFieldEffect",
+    "Atmosphere",
+    "ChromaticAberrationEffect",
+    "ColorAdjustEffect",
+    "SunRaysEffect",
+    "VignetteEffect"
 }
 
--- Terapkan pengaturan
+-- Function to forcefully apply daylight settings
 local function forceDaylightSettings()
-	for property, value in pairs(TARGET_SETTINGS) do
-		if Lighting[property] ~= value then
-			Lighting[property] = value
-		end
-	end
-
-	local function disableEffectsIn(parent)
-		for _, effectName in ipairs(EFFECTS_TO_DISABLE) do
-			local effect = parent:FindFirstChildOfClass(effectName)
-			if effect then
-				if effect:IsA("Atmosphere") then
-					effect.Density = 0
-					effect.Haze = 0
-					effect.Glare = 0
-				else
-					effect.Enabled = false
-				end
-			end
-		end
-	end
-
-	disableEffectsIn(Lighting)
-	disableEffectsIn(Camera)
+    -- Apply all lighting properties
+    for property, value in pairs(TARGET_SETTINGS) do
+        if Lighting[property] ~= value then
+            Lighting[property] = value
+        end
+    end
+    
+    -- Disable all unwanted effects
+    local function disableEffectsIn(parent)
+        if not parent then return end
+        for _, effectName in ipairs(EFFECTS_TO_DISABLE) do
+            local effect = parent:FindFirstChildOfClass(effectName)
+            if effect then
+                if effect:IsA("Atmosphere") then
+                    -- Completely neutralize atmosphere
+                    effect.Density = 0
+                    effect.Haze = 0
+                    effect.Glare = 0
+                    effect.SeaLevel = 0
+                elseif effect:IsA("ColorCorrectionEffect") then
+                    -- Reset color correction to neutral
+                    effect.Contrast = 0
+                    effect.Saturation = 1
+                    effect.Brightness = 0
+                    effect.TintColor = Color3.new(1, 1, 1)
+                    effect.Enabled = false
+                elseif effect:IsA("BloomEffect") then
+                    effect.Intensity = 0
+                    effect.Enabled = false
+                elseif effect:IsA("DepthOfFieldEffect") then
+                    effect.Enabled = false
+                    effect.FocusDistance = 50
+                    effect.InFocusRadius = 50
+                else
+                    effect.Enabled = false
+                end
+            end
+        end
+    end
+    
+    disableEffectsIn(Lighting)
+    disableEffectsIn(Camera)
 end
 
--- Jalankan sekali di awal
+-- Force settings immediately
 forceDaylightSettings()
 
--- Awasi perubahan properti penting
+-- Continuously enforce settings (backup for any changes)
+RunService.Heartbeat:Connect(forceDaylightSettings)
+
+-- Also listen for property changes as backup
 for property, _ in pairs(TARGET_SETTINGS) do
-	Lighting:GetPropertyChangedSignal(property):Connect(forceDaylightSettings)
+    Lighting:GetPropertyChangedSignal(property):Connect(forceDaylightSettings)
 end
 
--- Awasi efek baru yang ditambahkan
+-- Watch for new effects being added
 local function onChildAdded(child)
-	for _, effectName in ipairs(EFFECTS_TO_DISABLE) do
-		if child:IsA(effectName) then
-			task.wait()
-			forceDaylightSettings()
-			break
-		end
-	end
+    for _, effectName in ipairs(EFFECTS_TO_DISABLE) do
+        if child:IsA(effectName) then
+            task.wait(0.1) -- Small delay to ensure proper initialization
+            forceDaylightSettings()
+            break
+        end
+    end
 end
 
+-- Monitor both Lighting and Camera for new effects
 Lighting.ChildAdded:Connect(onChildAdded)
 Camera.ChildAdded:Connect(onChildAdded)
 
-print("☀️ Siang cerah aktif untuk LocalPlayer.")
+print("☀️ Enhanced daylight activated - Full brightness everywhere, no fog or effects!")
