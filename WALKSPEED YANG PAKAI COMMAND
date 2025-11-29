@@ -1,0 +1,238 @@
+--=====================================================================
+--  FULL SCRIPT - WALKSPEED SYSTEM (2 LOGIC) + UTILITIES
+--  FITUR:
+--    ✔ AUTOCHECK WalkSpeed (Logic 1 → Logic 2 jika gagal)
+--    ✔ Chat Commands (/100 /200 /noclipon /infjumpon ...etc)
+--    ✔ Noclip (default TRUE)
+--    ✔ Infinite Jump
+--    ✔ Anti-AFK
+--    ✔ AutoJump Roblox DISABLED otomatis
+--=====================================================================
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+local StarterGui = game:GetService("StarterGui")
+local VirtualUser = game:GetService("VirtualUser")
+
+local player = Players.LocalPlayer
+repeat task.wait() until player
+
+-- GLOBAL SETTINGS
+getgenv().SpeedValue = 100
+getgenv().UseMetaHook = false -- akan ON otomatis jika Logic 1 gagal
+getgenv().NoclipEnabled = true   -- DEFAULT TRUE sesuai permintaan
+getgenv().InfJumpEnabled = true
+getgenv().AntiAFKEnabled = true
+
+-- CONNECTION STORAGE
+local speedConn = nil
+local noclipConn = nil
+local infJumpConn = nil
+local afkConn = nil
+
+local function Notify(title, msg)
+	pcall(function()
+		StarterGui:SetCore("SendNotification", {
+			Title = title,
+			Text = msg,
+			Duration = 3
+		})
+	end)
+end
+
+--=====================================================================
+--                    WALKSPEED LOGIC 1 (NORMAL LOCK)
+--=====================================================================
+
+local function ApplySpeedLock(Character)
+	if not Character then return end
+	local Humanoid = Character:WaitForChild("Humanoid", 10)
+	if not Humanoid then return end
+
+	-- Disable AutoJump Roblox
+	Humanoid.AutoJumpEnabled = false
+
+	-- Set awal
+	Humanoid.WalkSpeed = getgenv().SpeedValue
+
+	-- hapus koneksi lama
+	if speedConn then
+		speedConn:Disconnect()
+		speedConn = nil
+	end
+
+	speedConn = Humanoid:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
+		if not getgenv().UseMetaHook then
+			if Humanoid.WalkSpeed ~= getgenv().SpeedValue then
+				Humanoid.WalkSpeed = getgenv().SpeedValue
+			end
+		end
+	end)
+end
+
+--=====================================================================
+--                    WALKSPEED LOGIC 2 (HOOK METAMETHOD)
+--=====================================================================
+
+local function EnableMetaHook()
+	if getgenv().MetaHookActivated then return end
+	getgenv().MetaHookActivated = true
+
+	local mt = getrawmetatable(game)
+	local old = mt.__newindex
+	setreadonly(mt, false)
+
+	mt.__newindex = function(self, idx, val)
+		if idx == "WalkSpeed" and not checkcaller() then
+			return old(self, idx, getgenv().SpeedValue)
+		end
+		return old(self, idx, val)
+	end
+
+	setreadonly(mt, true)
+
+	Notify("Speed Fallback", "Logic 2 (MetaHook) Activated")
+end
+
+--=====================================================================
+--                   AUTOCHECK: LOGIC 1 WORK OR NOT?
+--=====================================================================
+
+local function AutoCheckSpeed()
+	task.spawn(function()
+		task.wait(2)
+
+		local char = player.Character
+		if not char then return end
+		
+		local hum = char:FindFirstChild("Humanoid")
+		if not hum then return end
+
+		hum.WalkSpeed = getgenv().SpeedValue
+		task.wait(0.3)
+
+		if hum.WalkSpeed ~= getgenv().SpeedValue then
+			getgenv().UseMetaHook = true
+			EnableMetaHook()
+		else
+			getgenv().UseMetaHook = false
+			Notify("Speed Lock", "Logic 1 Active")
+		end
+
+		hum.WalkSpeed = getgenv().SpeedValue
+	end)
+end
+
+--=====================================================================
+--                      CHAT COMMAND HANDLER
+--=====================================================================
+
+player.Chatted:Connect(function(msg)
+	local m = msg:lower()
+
+	-- speed: /100 /200 /300 etc
+	if m:sub(1,1) == "/" and tonumber(m:sub(2)) then
+		local new = tonumber(m:sub(2))
+		getgenv().SpeedValue = new
+		Notify("WalkSpeed Updated", tostring(new))
+
+		if player.Character and player.Character:FindFirstChild("Humanoid") then
+			player.Character.Humanoid.WalkSpeed = new
+		end
+	end
+
+	-- toggle noclip
+	if m == "/noclipon" then
+		getgenv().NoclipEnabled = true
+		Notify("Noclip", "ON")
+	elseif m == "/noclipoff" then
+		getgenv().NoclipEnabled = false
+		Notify("Noclip", "OFF")
+	end
+
+	-- toggle infinite jump
+	if m == "/infjumpon" then
+		getgenv().InfJumpEnabled = true
+		Notify("Inf Jump", "ON")
+	elseif m == "/infjumpoff" then
+		getgenv().InfJumpEnabled = false
+		Notify("Inf Jump", "OFF")
+	end
+end)
+
+--=====================================================================
+--                           NOCLIP
+--=====================================================================
+
+local function StartNoclip()
+	if noclipConn then return end
+
+	noclipConn = RunService.Stepped:Connect(function()
+		if not getgenv().NoclipEnabled then return end
+		local char = player.Character
+		if not char then return end
+
+		for _, part in ipairs(char:GetChildren()) do
+			if part:IsA("BasePart") then
+				part.CanCollide = false
+			end
+		end
+	end)
+end
+
+--=====================================================================
+--                       INFINITE JUMP
+--=====================================================================
+
+local function StartInfJump()
+	if infJumpConn then return end
+
+	infJumpConn = UIS.JumpRequest:Connect(function()
+		if getgenv().InfJumpEnabled then
+			local char = player.Character
+			if not char then return end
+			local hum = char:FindFirstChild("Humanoid")
+			if hum then
+				hum:ChangeState(Enum.HumanoidStateType.Jumping)
+			end
+		end
+	end)
+end
+
+--=====================================================================
+--                           ANTI AFK
+--=====================================================================
+
+local function StartAntiAFK()
+	if afkConn then return end
+
+	afkConn = player.Idled:Connect(function()
+		if getgenv().AntiAFKEnabled then
+			VirtualUser:CaptureController()
+			VirtualUser:ClickButton2(Vector2.new())
+		end
+	end)
+end
+
+--=====================================================================
+--                           INITIALIZE
+--=====================================================================
+
+player.CharacterAdded:Connect(function(char)
+	task.wait(0.3)
+	ApplySpeedLock(char)
+	AutoCheckSpeed()
+end)
+
+if player.Character then
+	ApplySpeedLock(player.Character)
+	AutoCheckSpeed()
+end
+
+StartNoclip()
+StartInfJump()
+StartAntiAFK()
+
+Notify("Script Loaded!")
+print("SCRIPT ACTIVE")
