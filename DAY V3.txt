@@ -1,0 +1,141 @@
+-- ☀️ Efficient Natural Daylight System v3 (Toggleable)
+-- Command: /dayon (Nyala), /dayoff (Mati)
+
+local Lighting = game:GetService("Lighting")
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+
+local LocalPlayer = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+
+-- ================= KONFIGURASI VISUAL =================
+local SETTINGS = {
+	TargetClock = 12,        -- Jam 12 Siang
+	Brightness = 2.5,        -- Kecerahan seimbang
+	FogEnd = 100000,         -- Hapus Kabut
+	Ambient = Color3.fromRGB(170, 170, 170), -- Abu terang (Natural)
+	Outdoor = Color3.fromRGB(150, 150, 150), -- Abu standar
+	Shadows = false,         -- False = Terang merata
+}
+
+-- ================= VARIABLE KONTROL =================
+local isEnabled = true -- Status Default (Ubah jadi false jika ingin mati saat join)
+local renderConnection = nil
+local lightingParamsConnection = nil
+local childAddedConnection = nil
+local myColorEffect = nil
+
+-- ================= FUNGSI EFEK (VIBRANCE) =================
+local function createOrUpdateEffect()
+	-- Pastikan efek kita ada
+	if not myColorEffect or not myColorEffect.Parent then
+		myColorEffect = Instance.new("ColorCorrectionEffect")
+		myColorEffect.Name = "Daylight_Vibrance_Fix"
+		myColorEffect.Parent = Lighting
+	end
+	
+	-- Update properti agar warna 'hidup' (tidak pucat)
+	myColorEffect.Saturation = 0.25 
+	myColorEffect.Contrast = 0.05
+	myColorEffect.Brightness = 0.05
+	myColorEffect.Enabled = true
+end
+
+-- ================= FUNGSI MEMBERSIHKAN EFEK GAME =================
+local function cleanGameEffects()
+	-- Loop sekali untuk mematikan efek yang ada sekarang
+	for _, v in pairs(Lighting:GetChildren()) do
+		if (v:IsA("PostEffect") or v:IsA("Atmosphere")) and v ~= myColorEffect then
+			v.Enabled = false
+			if v:IsA("Atmosphere") then
+				v.Density = 0 -- Netralkan atmosfer
+			end
+		end
+	end
+end
+
+-- ================= LOOP UTAMA (ANTI-REVERT) =================
+local function onRenderStep()
+	-- Memaksa settingan setiap frame (Kalahkah script game)
+	Lighting.ClockTime = SETTINGS.TargetClock
+	Lighting.Brightness = SETTINGS.Brightness
+	Lighting.FogEnd = SETTINGS.FogEnd
+	Lighting.FogStart = SETTINGS.FogEnd * 0.8
+	Lighting.GlobalShadows = SETTINGS.Shadows
+	Lighting.Ambient = SETTINGS.Ambient
+	Lighting.OutdoorAmbient = SETTINGS.Outdoor
+	
+	-- Paksa Effect Vibrance tetap nyala
+	if myColorEffect then myColorEffect.Enabled = true end
+	
+	-- Netralkan Camera Exposure (Supaya tidak gelap otomatis saat lihat matahari)
+	if Camera then Camera.ExposureCompensation = 0 end
+end
+
+-- ================= MANAJEMEN TOGGLE (ON/OFF) =================
+
+local function StartDaylight()
+	if not isEnabled then return end -- Double check
+	
+	print("☀️ Daylight: ENABLED")
+	
+	-- 1. Buat Efek Vibrance
+	createOrUpdateEffect()
+	
+	-- 2. Bersihkan Efek Awal
+	cleanGameEffects()
+	
+	-- 3. Deteksi Efek Baru (Event Based - Lebih Hemat CPU dari While Loop)
+	if childAddedConnection then childAddedConnection:Disconnect() end
+	childAddedConnection = Lighting.ChildAdded:Connect(function(child)
+		task.wait() -- Tunggu properti terload
+		if isEnabled and (child:IsA("PostEffect") or child:IsA("Atmosphere")) and child ~= myColorEffect then
+			child.Enabled = false
+			if child:IsA("Atmosphere") then child.Density = 0 end
+		end
+	end)
+	
+	-- 4. Aktifkan Loop Paksa (RenderStepped)
+	RunService:BindToRenderStep("Daylight_Enforcer", Enum.RenderPriority.Camera.Value + 1, onRenderStep)
+end
+
+local function StopDaylight()
+	print("🌑 Daylight: DISABLED")
+	
+	-- 1. Matikan Loop Paksa
+	RunService:UnbindFromRenderStep("Daylight_Enforcer")
+	
+	-- 2. Matikan Listener
+	if childAddedConnection then childAddedConnection:Disconnect() end
+	
+	-- 3. Hapus Efek Buatan Kita
+	if myColorEffect then
+		myColorEffect:Destroy()
+		myColorEffect = nil
+	end
+	
+	-- Script berhenti memaksa.
+	-- Catatan: Game akan kembali ke settingan aslinya saat script game melakukan update berikutnya.
+	-- Biasanya instan di game yang punya siklus siang malam.
+end
+
+-- ================= SISTEM CHAT COMMAND =================
+LocalPlayer.Chatted:Connect(function(msg)
+	local m = string.lower(msg)
+	
+	if m == "/dayon" then
+		isEnabled = true
+		StartDaylight()
+	elseif m == "/dayoff" then
+		isEnabled = false
+		StopDaylight()
+	end
+end)
+
+-- ================= MULAI SCRIPT =================
+if isEnabled then
+	StartDaylight()
+end
+
+print("✅ Efficient Daylight v3 Loaded! (/dayon, /dayoff)")
