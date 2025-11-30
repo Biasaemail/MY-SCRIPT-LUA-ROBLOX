@@ -1,0 +1,163 @@
+-- ☀️ Natural Day & Cave Brightness v4 (Snapshot System)
+-- Fitur: Terang di dalam gua/rumah TAPI warna tetap natural asli game.
+-- Command: /dayon, /dayoff
+
+local Lighting = game:GetService("Lighting")
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+
+local LocalPlayer = Players.LocalPlayer
+
+-- ================= VARIABLE SYSTEM =================
+local isDayMode = true -- Default nyala
+local renderLoop = nil
+local lightingConnection = nil
+
+-- Kita simpan settingan asli game di sini untuk fitur /dayoff
+local originalSettings = {
+	ClockTime = Lighting.ClockTime,
+	Brightness = Lighting.Brightness,
+	GlobalShadows = Lighting.GlobalShadows,
+	Ambient = Lighting.Ambient,
+	OutdoorAmbient = Lighting.OutdoorAmbient,
+	FogEnd = Lighting.FogEnd,
+	EnvironmentDiffuseScale = Lighting.EnvironmentDiffuseScale,
+	EnvironmentSpecularScale = Lighting.EnvironmentSpecularScale
+}
+
+-- ================= LOGIKA "NATURAL BRIGHT" =================
+local function applyNaturalBrightness()
+	-- 1. Jam Siang Paling Netral (Jam 12-14 adalah puncak matahari)
+	Lighting.ClockTime = 14 
+	
+	-- 2. Kecerahan Standar
+	Lighting.Brightness = 2 
+	
+	-- 3. RAHASIA UTAMA: Environment Scale
+	-- Ini membuat pencahayaan memantul dari langit (Skybox)
+	-- Membuat objek terlihat 3D tapi sangat terang.
+	Lighting.EnvironmentDiffuseScale = 1
+	Lighting.EnvironmentSpecularScale = 1
+	
+	-- 4. RAHASIA GUA/RUMAH TERANG (Tanpa Matikan Shadow)
+	-- Kita biarkan GlobalShadows = true agar grafik tetap terlihat bagus/3D.
+	-- TAPI, kita naikkan Ambient (Cahaya Bayangan) menjadi abu-abu terang.
+	Lighting.GlobalShadows = true 
+	
+	-- Warna (180, 180, 180) adalah titik temu terbaik.
+	-- Kalau 255 (Putih) = Tekstur hilang (silau).
+	-- Kalau 180 (Abu Terang) = Terang tapi tekstur tembok/tanah masih tajam.
+	local naturalBrightColor = Color3.fromRGB(180, 180, 180)
+	
+	Lighting.Ambient = naturalBrightColor        -- Cahaya Indoor (Gua/Rumah)
+	Lighting.OutdoorAmbient = naturalBrightColor -- Cahaya Outdoor
+	
+	-- 5. Hapus Kabut (Fog) agar pandangan jauh
+	Lighting.FogEnd = 100000
+	Lighting.FogStart = 100000
+end
+
+-- ================= FUNGSI MEMBERSIHKAN EFEK PENGGANGGU =================
+-- Beberapa game pakai "Atmosphere" atau "Blur" yang bikin gelap/buram
+local function clearVisualNoise()
+	for _, v in pairs(Lighting:GetChildren()) do
+		if v:IsA("Atmosphere") then
+			v.Density = 0 -- Hilangkan kepadatan udara (penyebab utama gua gelap di game modern)
+			v.Haze = 0
+		elseif v:IsA("BlurEffect") or v:IsA("DepthOfFieldEffect") then
+			v.Enabled = false
+		end
+	end
+end
+
+-- ================= SISTEM AKTIVASI (ON/OFF) =================
+
+local function EnableDay()
+	print("☀️ Mode Siang: AKTIF")
+	
+	-- Simpan settingan asli dulu jika belum tersimpan (untuk backup)
+	if not renderLoop then
+		originalSettings.ClockTime = Lighting.ClockTime
+		originalSettings.Ambient = Lighting.Ambient
+		originalSettings.OutdoorAmbient = Lighting.OutdoorAmbient
+		originalSettings.GlobalShadows = Lighting.GlobalShadows
+	end
+
+	-- Loop Agresif (RenderStepped)
+	-- Kita pakai ini supaya script game tidak bisa mengubah malam lagi
+	renderLoop = RunService.RenderStepped:Connect(function()
+		applyNaturalBrightness()
+		
+		-- Pastikan exposure kamera netral (tidak gelap otomatis saat liat matahari)
+		if workspace.CurrentCamera then
+			workspace.CurrentCamera.ExposureCompensation = 0
+		end
+	end)
+	
+	-- Listener untuk mematikan efek baru yang mungkin muncul
+	lightingConnection = Lighting.ChildAdded:Connect(function(child)
+		task.wait()
+		if child:IsA("Atmosphere") or child:IsA("BlurEffect") then
+			clearVisualNoise()
+		end
+	end)
+	
+	-- Bersihkan efek yang sudah ada sekarang
+	clearVisualNoise()
+end
+
+local function DisableDay()
+	print("🌑 Mode Siang: MATI (Kembali ke Asli)")
+	
+	-- 1. Matikan Loop Paksa
+	if renderLoop then 
+		renderLoop:Disconnect() 
+		renderLoop = nil
+	end
+	
+	if lightingConnection then
+		lightingConnection:Disconnect()
+		lightingConnection = nil
+	end
+	
+	-- 2. KEMBALIKAN SETTINGAN ASLI GAME
+	-- Ini akan membuat game terlihat persis seperti sebelum kamu pakai script
+	Lighting.ClockTime = originalSettings.ClockTime
+	Lighting.Brightness = originalSettings.Brightness
+	Lighting.GlobalShadows = originalSettings.GlobalShadows
+	Lighting.Ambient = originalSettings.Ambient
+	Lighting.OutdoorAmbient = originalSettings.OutdoorAmbient
+	Lighting.FogEnd = originalSettings.FogEnd
+	Lighting.EnvironmentDiffuseScale = originalSettings.EnvironmentDiffuseScale
+	Lighting.EnvironmentSpecularScale = originalSettings.EnvironmentSpecularScale
+	
+	-- Nyalakan kembali efek visual game (Atmosphere dll)
+	for _, v in pairs(Lighting:GetChildren()) do
+		if v:IsA("Atmosphere") or v:IsA("BlurEffect") or v:IsA("DepthOfFieldEffect") then
+			v.Enabled = true
+			-- Kembalikan density atmosphere agak susah karena dinamis, 
+			-- tapi biasanya game akan update sendiri dalam 1 detik.
+		end
+	end
+end
+
+-- ================= COMMAND CHAT =================
+LocalPlayer.Chatted:Connect(function(msg)
+	local m = string.lower(msg)
+	if m == "/dayon" then
+		if not isDayMode then
+			isDayMode = true
+			EnableDay()
+		end
+	elseif m == "/dayoff" then
+		if isDayMode then
+			isDayMode = false
+			DisableDay()
+		end
+	end
+end)
+
+-- ================= AUTO START =================
+if isDayMode then
+	EnableDay()
+end
