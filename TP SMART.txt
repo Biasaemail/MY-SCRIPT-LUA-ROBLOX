@@ -1,0 +1,408 @@
+-- [[ ⚡ ULT Teleport UI - Mobile Optimized & Big Map Fix ]]
+-- Dibuat ulang untuk efisiensi maksimal pada Mobile & PC
+
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local CoreGui = game:GetService("CoreGui") -- Gunakan CoreGui jika exploit, atau PlayerGui jika script biasa
+
+local LocalPlayer = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+local Mouse = LocalPlayer:GetMouse()
+
+-- // KONFIGURASI
+local CONFIG = {
+    UI_COLOR = Color3.fromRGB(30, 30, 35), -- Warna Dasar Gelap
+    ACCENT_COLOR = Color3.fromRGB(60, 130, 255), -- Warna Biru Aksen
+    TEXT_COLOR = Color3.fromRGB(240, 240, 240),
+    TP_HEIGHT_OFFSET = 3, -- Teleport sedikit di atas kepala
+    BIG_MAP_TIMEOUT = 3, -- Waktu tunggu loading chunk di map besar
+}
+
+-- // UI VARIABLES
+local isHidden = false
+local isMinimized = false
+local viewingTarget = nil
+local viewConnection = nil
+local noclipLoop = nil
+
+-- // BUAT SCREEN GUI (Safety Check)
+local UI_NAME = "UltMobileTeleport_v3"
+if game:GetService("CoreGui"):FindFirstChild(UI_NAME) then game:GetService("CoreGui")[UI_NAME]:Destroy() end
+if LocalPlayer.PlayerGui:FindFirstChild(UI_NAME) then LocalPlayer.PlayerGui[UI_NAME]:Destroy() end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = UI_NAME
+-- Deteksi tempat penyimpanan yang aman (Eksploit pakai CoreGui, Studio pakai PlayerGui)
+pcall(function() ScreenGui.Parent = game:GetService("CoreGui") end)
+if not ScreenGui.Parent then ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui") end
+
+-- // FUNGSI PEMBUATAN UI (Rounded & Clean)
+local function createRound(instance, radius)
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, radius)
+    corner.Parent = instance
+    return corner
+end
+
+local function createStroke(instance, color, thick)
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = color
+    stroke.Thickness = thick
+    stroke.Parent = instance
+    return stroke
+end
+
+-- ================= KOMPONEN UI =================
+
+-- 1. Main Frame (Wadah Utama)
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainBoard"
+MainFrame.Size = UDim2.new(0, 220, 0, 300) -- Ukuran Compact (Cocok Mobile)
+MainFrame.Position = UDim2.new(0.05, 0, 0.2, 0) -- Posisi kiri tengah
+MainFrame.BackgroundColor3 = CONFIG.UI_COLOR
+MainFrame.Active = true
+MainFrame.Draggable = true -- Bisa digeser
+MainFrame.Parent = ScreenGui
+createRound(MainFrame, 10)
+createStroke(MainFrame, Color3.fromRGB(60,60,60), 1)
+
+-- 2. Top Bar (Header)
+local TopBar = Instance.new("Frame")
+TopBar.Size = UDim2.new(1, 0, 0, 35)
+TopBar.BackgroundColor3 = CONFIG.UI_COLOR
+TopBar.BackgroundTransparency = 0.2
+TopBar.Parent = MainFrame
+createRound(TopBar, 10) -- Hanya atas yg perlu rounded sebenernya
+
+local Title = Instance.new("TextLabel")
+Title.Text = "⚡ ULT TELEPORT"
+Title.Font = Enum.Font.GothamBold
+Title.TextColor3 = CONFIG.ACCENT_COLOR
+Title.TextSize = 14
+Title.Size = UDim2.new(0.6, 0, 1, 0)
+Title.Position = UDim2.new(0.05, 0, 0, 0)
+Title.BackgroundTransparency = 1
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Parent = TopBar
+
+-- Tombol Minimize
+local MinBtn = Instance.new("TextButton")
+MinBtn.Text = "-"
+MinBtn.Font = Enum.Font.GothamBold
+MinBtn.TextSize = 18
+MinBtn.TextColor3 = CONFIG.TEXT_COLOR
+MinBtn.Size = UDim2.new(0, 30, 1, 0)
+MinBtn.Position = UDim2.new(0.85, 0, 0, 0)
+MinBtn.BackgroundTransparency = 1
+MinBtn.Parent = TopBar
+
+-- 3. Content Container (List Player)
+local Content = Instance.new("Frame")
+Content.Size = UDim2.new(0.9, 0, 0.7, 0) -- Sisa ruang untuk tombol
+Content.Position = UDim2.new(0.05, 0, 0.14, 0)
+Content.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+Content.Parent = MainFrame
+createRound(Content, 6)
+
+local Scroll = Instance.new("ScrollingFrame")
+Scroll.Size = UDim2.new(1, -4, 1, -4)
+Scroll.Position = UDim2.new(0, 2, 0, 2)
+Scroll.BackgroundTransparency = 1
+Scroll.ScrollBarThickness = 3
+Scroll.Parent = Content
+local UIList = Instance.new("UIListLayout")
+UIList.SortOrder = Enum.SortOrder.LayoutOrder
+UIList.Padding = UDim.new(0, 2)
+UIList.Parent = Scroll
+
+-- 4. Search Box
+local SearchBox = Instance.new("TextBox")
+SearchBox.PlaceholderText = "🔍 Cari Nama..."
+SearchBox.Size = UDim2.new(0.9, 0, 0, 25)
+SearchBox.Position = UDim2.new(0.05, 0, 0.86, 0) -- Di bawah list
+SearchBox.BackgroundColor3 = Color3.fromRGB(40,40,45)
+SearchBox.TextColor3 = Color3.new(1,1,1)
+SearchBox.Font = Enum.Font.Gotham
+SearchBox.TextSize = 12
+SearchBox.Parent = MainFrame
+createRound(SearchBox, 5)
+
+-- 5. Status Label (Info kecil)
+local StatusLbl = Instance.new("TextLabel")
+StatusLbl.Size = UDim2.new(1, 0, 0, 15)
+StatusLbl.Position = UDim2.new(0, 0, 1.02, 0)
+StatusLbl.BackgroundTransparency = 1
+StatusLbl.TextColor3 = Color3.new(1,0.8,0.2)
+StatusLbl.TextSize = 10
+StatusLbl.Font = Enum.Font.GothamBold
+StatusLbl.Text = ""
+StatusLbl.Parent = MainFrame
+
+-- 6. Minimize Icon (Tombol Kecil saat di-minimize)
+local MinIcon = Instance.new("TextButton")
+MinIcon.Name = "OpenButton"
+MinIcon.Size = UDim2.new(0, 40, 0, 40)
+MinIcon.Position = UDim2.new(0, 10, 0.5, 0)
+MinIcon.BackgroundColor3 = CONFIG.UI_COLOR
+MinIcon.Text = "⚡"
+MinIcon.TextSize = 20
+MinIcon.TextColor3 = CONFIG.ACCENT_COLOR
+MinIcon.Visible = false
+MinIcon.Draggable = true
+MinIcon.Active = true
+MinIcon.Parent = ScreenGui
+createRound(MinIcon, 20)
+createStroke(MinIcon, CONFIG.ACCENT_COLOR, 1)
+
+-- ================= LOGIKA & FUNGSI =================
+
+-- [UTILITY] Status Update
+local function setStatus(msg)
+    StatusLbl.Text = msg
+    task.delay(2, function()
+        if StatusLbl.Text == msg then StatusLbl.Text = "" end
+    end)
+end
+
+-- [CORE] Logika Mencari Target yang "Hilang" di Map Besar
+local function getTargetInstance(player)
+    -- Prioritas 1: Karakter normal dari Player
+    if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+        return player.Character
+    end
+    
+    -- Prioritas 2: Cari di Workspace manual (kasus custom character/streaming enabled)
+    -- Kadang nama model di workspace == nama player
+    local findInWork = Workspace:FindFirstChild(player.Name)
+    if findInWork and findInWork:FindFirstChild("HumanoidRootPart") then
+        return findInWork
+    end
+
+    return nil
+end
+
+-- [CORE] Spectate / View Logic
+local function toggleSpectate(player)
+    if viewingTarget == player then
+        -- Cancel View
+        Camera.CameraSubject = LocalPlayer.Character.Humanoid
+        viewingTarget = nil
+        setStatus("👁️ Stop View")
+        return
+    end
+
+    local targetChar = getTargetInstance(player)
+    
+    if targetChar then
+        viewingTarget = player
+        Camera.CameraSubject = targetChar:FindFirstChild("Humanoid") or targetChar:FindFirstChild("HumanoidRootPart")
+        setStatus("👁️ Viewing " .. player.DisplayName)
+        
+        -- Loop penjaga agar camera tidak stuck jika target mati
+        if viewConnection then viewConnection:Disconnect() end
+        viewConnection = RunService.RenderStepped:Connect(function()
+            if not viewingTarget or not viewingTarget.Character then
+                Camera.CameraSubject = LocalPlayer.Character.Humanoid
+                viewingTarget = nil
+                viewConnection:Disconnect()
+            end
+        end)
+    else
+        -- Jika fisik belum ada (StreamingEnabled), kita coba paksa kamera ke Player
+        -- Ini trik Roblox: set camera ke Player Instance kadang memaksa server memuat chunknya
+        pcall(function()
+            Camera.CameraSubject = player
+            viewingTarget = player
+            setStatus("⏳ Loading chunk " .. player.Name)
+        end)
+    end
+end
+
+-- [CORE] Teleport Logic (Streaming + Physics Safe)
+local function performTeleport(targetPlayer)
+    if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        setStatus("❌ Anda belum spawn")
+        return
+    end
+
+    local LocalRoot = LocalPlayer.Character.HumanoidRootPart
+    local Humanoid = LocalPlayer.Character:FindFirstChild("Humanoid")
+    
+    -- Anti-Sit (Berdiri dulu)
+    if Humanoid and Humanoid.Sit then Humanoid.Sit = false end
+
+    -- Noclip Singkat (Agar tidak nyangkut)
+    if noclipLoop then noclipLoop:Disconnect() end
+    noclipLoop = RunService.Stepped:Connect(function()
+        for _, part in pairs(LocalPlayer.Character:GetDescendants()) do
+            if part:IsA("BasePart") and part.CanCollide then part.CanCollide = false end
+        end
+    end)
+    task.delay(1.5, function() if noclipLoop then noclipLoop:Disconnect() end end)
+
+    -- Mencari Target
+    local targetChar = getTargetInstance(targetPlayer)
+
+    -- Skenario A: Target ditemukan (Ada fisik/dekat)
+    if targetChar then
+        local targetRoot = targetChar:FindFirstChild("HumanoidRootPart")
+        if targetRoot then
+            LocalRoot.CFrame = targetRoot.CFrame + Vector3.new(0, CONFIG.TP_HEIGHT_OFFSET, 0)
+            setStatus("🚀 Teleport to " .. targetPlayer.DisplayName)
+        end
+
+    -- Skenario B: Target jauh (Streaming Enabled/Big Map)
+    else
+        setStatus("⏳ Jarak jauh: Syncing...")
+        -- Trik: Spectate dulu biar chunknya dimuat server
+        local oldSubject = Camera.CameraSubject
+        Camera.CameraSubject = targetPlayer -- Fokus ke player object
+        
+        local timer = 0
+        local success = false
+        
+        -- Loop tunggu chunk loaded (maksimal 3 detik)
+        local loop
+        loop = RunService.Heartbeat:Connect(function(dt)
+            timer = timer + dt
+            local checkChar = getTargetInstance(targetPlayer)
+            
+            if checkChar and checkChar:FindFirstChild("HumanoidRootPart") then
+                success = true
+                -- Fisik sudah ada! Teleport sekarang
+                LocalRoot.CFrame = checkChar.HumanoidRootPart.CFrame + Vector3.new(0, CONFIG.TP_HEIGHT_OFFSET, 0)
+                Camera.CameraSubject = LocalPlayer.Character.Humanoid -- Kembalikan kamera
+                setStatus("🚀 Teleport Success!")
+                loop:Disconnect()
+            elseif timer > CONFIG.BIG_MAP_TIMEOUT then
+                -- Timeout
+                Camera.CameraSubject = LocalPlayer.Character.Humanoid -- Kembalikan kamera
+                setStatus("❌ Gagal: Area belum dimuat")
+                loop:Disconnect()
+            end
+        end)
+    end
+end
+
+-- [UI] Refresh Player List
+local function updateList()
+    -- Bersihkan list lama
+    for _, v in pairs(Scroll:GetChildren()) do
+        if v:IsA("Frame") then v:Destroy() end
+    end
+    
+    local filter = SearchBox.Text:lower()
+    
+    for _, plr in pairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer then
+            if filter == "" or plr.Name:lower():match(filter) or plr.DisplayName:lower():match(filter) then
+                
+                -- Container Row
+                local Row = Instance.new("Frame")
+                Row.Size = UDim2.new(1, 0, 0, 30)
+                Row.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+                Row.BorderSizePixel = 0
+                Row.Parent = Scroll
+                createRound(Row, 4)
+
+                -- Nama
+                local NameLbl = Instance.new("TextLabel")
+                NameLbl.Text = plr.DisplayName
+                NameLbl.Font = Enum.Font.GothamSemibold
+                NameLbl.TextSize = 11
+                NameLbl.TextColor3 = CONFIG.TEXT_COLOR
+                NameLbl.Size = UDim2.new(0.5, 0, 1, 0)
+                NameLbl.Position = UDim2.new(0.05, 0, 0, 0)
+                NameLbl.BackgroundTransparency = 1
+                NameLbl.TextXAlignment = Enum.TextXAlignment.Left
+                NameLbl.TextTruncate = Enum.TextTruncate.AtEnd
+                NameLbl.Parent = Row
+
+                -- Tombol VIEW (Mata)
+                local ViewBtn = Instance.new("TextButton")
+                ViewBtn.Text = "👁️"
+                ViewBtn.Size = UDim2.new(0, 25, 0, 25)
+                ViewBtn.Position = UDim2.new(0.65, 0, 0.1, 0)
+                ViewBtn.BackgroundColor3 = Color3.fromRGB(50,50,60)
+                ViewBtn.TextColor3 = Color3.new(1,1,1)
+                ViewBtn.Parent = Row
+                createRound(ViewBtn, 4)
+                
+                ViewBtn.MouseButton1Click:Connect(function()
+                    toggleSpectate(plr)
+                end)
+
+                -- Tombol TP (Go)
+                local TpBtn = Instance.new("TextButton")
+                TpBtn.Text = "GO"
+                TpBtn.Font = Enum.Font.GothamBold
+                TpBtn.Size = UDim2.new(0, 30, 0, 25)
+                TpBtn.Position = UDim2.new(0.8, 0, 0.1, 0)
+                TpBtn.BackgroundColor3 = CONFIG.ACCENT_COLOR
+                TpBtn.TextColor3 = Color3.new(1,1,1)
+                TpBtn.TextSize = 10
+                TpBtn.Parent = Row
+                createRound(TpBtn, 4)
+                
+                TpBtn.MouseButton1Click:Connect(function()
+                    performTeleport(plr)
+                end)
+            end
+        end
+    end
+    
+    Scroll.CanvasSize = UDim2.new(0, 0, 0, UIList.AbsoluteContentSize.Y + 5)
+end
+
+-- [EVENT] Auto Update List
+SearchBox:GetPropertyChangedSignal("Text"):Connect(updateList)
+Players.PlayerAdded:Connect(updateList)
+Players.PlayerRemoving:Connect(updateList)
+updateList()
+
+-- [EVENT] Minimize & Chat Logic
+MinBtn.MouseButton1Click:Connect(function()
+    MainFrame.Visible = false
+    MinIcon.Visible = true
+    isMinimized = true
+end)
+
+MinIcon.MouseButton1Click:Connect(function()
+    MainFrame.Visible = true
+    MinIcon.Visible = false
+    isMinimized = false
+    -- Reset posisi jika hilang dari layar
+    if MainFrame.AbsolutePosition.X < 0 or MainFrame.AbsolutePosition.Y < 0 then
+        MainFrame.Position = UDim2.new(0.5, -110, 0.5, -150)
+    end
+end)
+
+-- [EVENT] Chat Commands
+LocalPlayer.Chatted:Connect(function(msg)
+    local cmd = msg:lower()
+    if cmd == "/tpon" then
+        if isMinimized then 
+            MinIcon.Visible = true 
+        else
+            MainFrame.Visible = true 
+        end
+        isHidden = false
+        setStatus("✅ GUI Ditampilkan")
+    elseif cmd == "/tpoff" then
+        MainFrame.Visible = false
+        MinIcon.Visible = false
+        isHidden = true
+        setStatus("🚫 GUI Disembunyikan")
+    elseif cmd == "/tpmin" then
+        MainFrame.Visible = false
+        MinIcon.Visible = true
+        isMinimized = true
+    end
+end)
+
+-- Notifikasi awal
+setStatus("Tekan '-' untuk minimize, /tpoff untuk close")
+print("✅ Mobile Teleport V3 Loaded!")
