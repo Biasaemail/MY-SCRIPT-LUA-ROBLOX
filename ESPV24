@@ -1,0 +1,367 @@
+-- LocalScript (ESP v15 - "Silent Analyst")
+-- Konsep: Hanya menampilkan Teks Role jika itu PENTING (Threat/Defender).
+-- Jika player biasa/civilian, hanya tampilkan Nama & Health (atau sembunyikan sesuai jarak).
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local StarterGui = game:GetService("StarterGui")
+
+local LocalPlayer = Players.LocalPlayer
+local LocalCamera = Workspace.CurrentCamera
+local MASTER_ENABLED = true
+
+-- ==========================================
+-- [ CONFIGURATION ]
+-- ==========================================
+
+local CONFIG = {
+	RENDER_DIST = 250000,
+	TEXT_DIST = 1000000,
+	
+	-- Update Rates (Throttling untuk performa maksimal)
+	VISUAL_UPDATE_RATE = 0.03, -- 20 FPS Render
+	SCANNER_RATE = 0.8,        -- Cek inventory setiap 0.8 detik
+	
+	-- Visual Settings
+	FONT = Enum.Font.GothamBold,
+	TEXT_SIZE_ROLE = 9,     -- Sangat kecil, hanya untuk info krusial
+	TEXT_SIZE_NAME = 11,
+	OFFSET = Vector3.new(0, 3, 0),
+}
+
+local COLORS = {
+	THREAT      = Color3.fromRGB(255, 40, 40),   -- Merah (Murderer/Enemy)
+	DEFENDER    = Color3.fromRGB(0, 180, 255),   -- Biru (Sheriff/Hero)
+	ALLY        = Color3.fromRGB(0, 255, 120),   -- Hijau (Team)
+	NEUTRAL     = Color3.fromRGB(200, 200, 200), -- Putih/Abu (Innocent)
+}
+
+-- ==========================================
+-- [ INTELLIGENCE: ROLE DEFINITIONS ]
+-- ==========================================
+-- Script hanya akan menampilkan TEKS ROLE jika cocok dengan list ini.
+-- Jika tidak cocok, dianggap "Civilian" dan teks role disembunyikan.
+
+local THREAT_DATABASE = {
+	{
+		Label = "MURDERER",
+		Color = COLORS.THREAT,
+		Keywords = {"Knife", "Dagger", "Machete", "Sword", "Katana", "Scythe"},
+		IsImportant = true -- Tampilkan Teks
+	},
+	{
+		Label = "SHERIFF",
+		Color = COLORS.DEFENDER,
+		Keywords = {"Gun", "Revolver", "Pistol", "Blaster", "Sheriff"},
+		IsImportant = true -- Tampilkan Teks
+	},
+	{
+		Label = "TRAITOR",
+		Color = COLORS.THREAT,
+		Keywords = {"C4", "Bomb", "Device"},
+		IsImportant = true
+	}
+}
+
+local ESP_CACHE = {}
+
+-- ==========================================
+-- [ LOGIC: ANALYZER ENGINE ]
+-- ==========================================
+
+local function scanInventory(player, keywords)
+	-- Cek Backpack (Tas) & Character (Tangan)
+	local items = {}
+	if player.Backpack then 
+		for _, i in ipairs(player.Backpack:GetChildren()) do table.insert(items, i) end 
+	end
+	if player.Character then 
+		for _, i in ipairs(player.Character:GetChildren()) do table.insert(items, i) end 
+	end
+
+	for _, item in ipairs(items) do
+		if item:IsA("Tool") then
+			for _, kw in ipairs(keywords) do
+				if string.find(item.Name:lower(), kw:lower()) then return true end
+			end
+		end
+	end
+	return false
+end
+
+local function analyzeThreatLevel(target)
+	if target == LocalPlayer then return nil end
+
+	-- 1. DEEP SCAN (Inventory Check)
+	for _, role in ipairs(THREAT_DATABASE) do
+		if scanInventory(target, role.Keywords) then
+			return {
+				Type = "SPECIAL",
+				Label = role.Label,
+				Color = role.Color,
+				ShowLabel = true -- PENTING: Tampilkan teks
+			}
+		end
+	end
+
+	-- 2. TEAM CHECK (Fallback)
+	if LocalPlayer.Team and target.Team then
+		if LocalPlayer.Team ~= target.Team then
+			return {
+				Type = "ENEMY",
+				Label = "ENEMY", -- Teks ini tidak akan ditampilkan (lihat logika render)
+				Color = COLORS.THREAT,
+				ShowLabel = false -- Musuh biasa tidak perlu teks role, cukup warna merah
+			}
+		else
+			return {
+				Type = "ALLY",
+				Label = "ALLY",
+				Color = COLORS.ALLY,
+				ShowLabel = false
+			}
+		end
+	end
+
+	-- 3. NEUTRAL / CIVILIAN
+	return {
+		Type = "NEUTRAL",
+		Label = "CIVILIAN",
+		Color = COLORS.NEUTRAL,
+		ShowLabel = false -- Jangan tampilkan teks "CIVILIAN"
+	}
+end
+
+-- ==========================================
+-- [ VISUAL: UI CREATION ]
+-- ==========================================
+
+local function createVisuals()
+	local bb = Instance.new("BillboardGui")
+	bb.Name = "ESP_Silent"
+	bb.Size = UDim2.new(0, 150, 0, 40) -- Ukuran compact
+	bb.StudsOffset = CONFIG.OFFSET
+	bb.AlwaysOnTop = true
+	bb.Enabled = false
+
+	local container = Instance.new("Frame")
+	container.BackgroundTransparency = 1
+	container.Size = UDim2.fromScale(1, 1)
+	container.Parent = bb
+
+	-- [ ROLE LABEL ] (Hanya muncul jika Threat)
+	local roleTxt = Instance.new("TextLabel")
+	roleTxt.Parent = container
+	roleTxt.Name = "Role"
+	roleTxt.BackgroundTransparency = 1
+	roleTxt.Position = UDim2.new(0, 0, 0.1, 0) -- Paling atas
+	roleTxt.Size = UDim2.new(1, 0, 0.3, 0)
+	roleTxt.Font = Enum.Font.GothamBlack -- Bold banget
+	roleTxt.Text = "" -- Kosong default
+	roleTxt.TextColor3 = Color3.new(1,0,0)
+	roleTxt.TextSize = CONFIG.TEXT_SIZE_ROLE
+	roleTxt.Visible = false -- Default Hidden
+	
+	local stroke = Instance.new("UIStroke")
+	stroke.Thickness = 1.5
+	stroke.Color = Color3.new(0,0,0)
+	stroke.Parent = roleTxt
+
+	-- [ NAME LABEL ]
+	local nameTxt = Instance.new("TextLabel")
+	nameTxt.Parent = container
+	nameTxt.Name = "Name"
+	nameTxt.BackgroundTransparency = 1
+	nameTxt.Position = UDim2.new(0, 0, 0.4, 0)
+	nameTxt.Size = UDim2.new(1, 0, 0.3, 0)
+	nameTxt.Font = CONFIG.FONT
+	nameTxt.Text = "Player"
+	nameTxt.TextColor3 = Color3.new(1,1,1)
+	nameTxt.TextSize = CONFIG.TEXT_SIZE_NAME
+	local stroke2 = stroke:Clone()
+	stroke2.Parent = nameTxt
+
+	-- [ HEALTH BAR ] (Tipis)
+	local hpBg = Instance.new("Frame")
+	hpBg.Parent = container
+	hpBg.BackgroundColor3 = Color3.fromRGB(30,30,30)
+	hpBg.BorderSizePixel = 0
+	hpBg.AnchorPoint = Vector2.new(0.5, 0)
+	hpBg.Position = UDim2.new(0.5, 0, 0.75, 0)
+	hpBg.Size = UDim2.new(0, 24, 0, 2) -- Sangat kecil (24x2 px)
+	
+	local hpFill = Instance.new("Frame")
+	hpFill.Parent = hpBg
+	hpFill.BorderSizePixel = 0
+	hpFill.Size = UDim2.fromScale(1, 1)
+	hpFill.BackgroundColor3 = Color3.new(0,1,0)
+
+	-- [ HIGHLIGHT ]
+	local hl = Instance.new("Highlight")
+	hl.FillTransparency = 0.6
+	hl.OutlineTransparency = 0.2
+	hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	hl.Enabled = false
+
+	return bb, hl, {Role=roleTxt, Name=nameTxt, Bar=hpFill}
+end
+
+-- ==========================================
+-- [ CORE: EVENTS & HANDLERS ]
+-- ==========================================
+
+local function clearESP(p)
+	local data = ESP_CACHE[p]
+	if data then
+		if data.GUI then data.GUI:Destroy() end
+		if data.HL then data.HL:Destroy() end
+		if data.Conns then for _, c in pairs(data.Conns) do c:Disconnect() end end
+		ESP_CACHE[p] = nil
+	end
+end
+
+local function onCharacterAdded(player, char)
+	if player == LocalPlayer then return end
+	clearESP(player)
+
+	local root = char:WaitForChild("HumanoidRootPart", 5)
+	local hum = char:WaitForChild("Humanoid", 5)
+	local head = char:WaitForChild("Head", 5)
+	if not root or not hum or not head then return end
+
+	local bb, hl, comps = createVisuals()
+	bb.Adornee = head
+	bb.Parent = head
+	hl.Adornee = char
+	hl.Parent = char
+	
+	comps.Name.Text = player.DisplayName
+
+	local conns = {}
+	-- Health Logic
+	table.insert(conns, hum.HealthChanged:Connect(function(h)
+		local perc = math.clamp(h / hum.MaxHealth, 0, 1)
+		comps.Bar.Size = UDim2.new(perc, 0, 1, 0)
+		if h <= 0 then bb.Enabled = false; hl.Enabled = false end
+	end))
+	
+	-- Cleanup Logic
+	table.insert(conns, char.AncestryChanged:Connect(function(_, parent)
+		if not parent then clearESP(player) end
+	end))
+
+	ESP_CACHE[player] = {
+		Player = player,
+		Char = char,
+		Root = root,
+		Hum = hum,
+		GUI = bb,
+		HL = hl,
+		Comps = comps,
+		Conns = conns,
+		Analysis = { Color = COLORS.NEUTRAL, ShowLabel = false }
+	}
+end
+
+local function onPlayerAdded(p)
+	p.CharacterAdded:Connect(function(c) onCharacterAdded(p, c) end)
+	if p.Character then onCharacterAdded(p, p.Character) end
+end
+
+-- ==========================================
+-- [ LOOP 1: THE BRAIN (Scanner) ]
+-- ==========================================
+task.spawn(function()
+	while true do
+		if MASTER_ENABLED then
+			for p, data in pairs(ESP_CACHE) do
+				if data.Player and data.Char and data.Hum.Health > 0 then
+					
+					-- ANALISA PLAYER
+					local result = analyzeThreatLevel(data.Player)
+					
+					-- UPDATE DATA
+					data.Analysis.Color = result.Color
+					data.Analysis.ShowLabel = result.ShowLabel
+					
+					-- UPDATE VISUAL (Warna & Teks Role)
+					data.HL.FillColor = result.Color
+					data.HL.OutlineColor = Color3.new(1,1,1)
+					
+					data.Comps.Bar.BackgroundColor3 = result.Color
+					
+					-- LOGIKA PINTAR: Tampilkan Role Text HANYA jika Important
+					if result.ShowLabel then
+						data.Comps.Role.Text = result.Label
+						data.Comps.Role.TextColor3 = result.Color
+						data.Comps.Role.Visible = true
+					else
+						data.Comps.Role.Visible = false -- Sembunyikan jika Civilian/Neutral/Enemy Biasa
+					end
+				end
+			end
+		end
+		task.wait(CONFIG.SCANNER_RATE)
+	end
+end)
+
+-- ==========================================
+-- [ LOOP 2: THE RENDERER (Visuals) ]
+-- ==========================================
+local lastRender = 0
+RunService.RenderStepped:Connect(function()
+	if not MASTER_ENABLED then 
+		for _, d in pairs(ESP_CACHE) do d.GUI.Enabled = false; d.HL.Enabled = false end
+		return 
+	end
+
+	local now = os.clock()
+	if now - lastRender < CONFIG.VISUAL_UPDATE_RATE then return end
+	lastRender = now
+
+	local camPos = LocalCamera.CFrame.Position
+
+	for p, data in pairs(ESP_CACHE) do
+		if not data.Root or data.Hum.Health <= 0 then continue end
+
+		local dist = (data.Root.Position - camPos).Magnitude
+		
+		if dist < CONFIG.RENDER_DIST then
+			data.GUI.Enabled = true
+			data.HL.Enabled = true
+			
+			-- Fade out nama jika terlalu jauh agar tidak pusing
+			if dist > CONFIG.TEXT_DIST then
+				data.Comps.Name.Visible = false
+				-- Role text tetap muncul jika penting, meskipun jauh
+				if data.Analysis.ShowLabel then
+					data.Comps.Role.Visible = true
+				else
+					data.Comps.Role.Visible = false
+				end
+			else
+				data.Comps.Name.Visible = true
+			end
+		else
+			data.GUI.Enabled = false
+			data.HL.Enabled = false
+		end
+	end
+end)
+
+-- ==========================================
+-- [ INIT ]
+-- ==========================================
+for _, p in ipairs(Players:GetPlayers()) do
+	if p ~= LocalPlayer then onPlayerAdded(p) end
+end
+Players.PlayerAdded:Connect(onPlayerAdded)
+Players.PlayerRemoving:Connect(clearESP)
+
+LocalPlayer.Chatted:Connect(function(msg)
+	if msg:lower() == "/espoff" then MASTER_ENABLED = false end
+	if msg:lower() == "/espon" then MASTER_ENABLED = true end
+end)
+
+StarterGui:SetCore("SendNotification", {Title="ESP Silent v15", Text="Smart Threat Detection Active", Duration=3})
