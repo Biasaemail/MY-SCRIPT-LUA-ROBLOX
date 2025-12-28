@@ -1,0 +1,224 @@
+-- Services
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local CoreGui = game:GetService("CoreGui")
+
+local Player = Players.LocalPlayer
+
+-- --- CONFIGURATION ---
+local CFG = {
+    PlatformSize = Vector3.new(18, 1.5, 18), 
+    LiftSpeed = 30,   -- Kecepatan Naik (Cepat & Responsif)
+    DropSpeed = 30,   -- Kecepatan Turun
+    UI_Color = Color3.fromRGB(25, 25, 30),
+    Accent_Color = Color3.fromRGB(0, 255, 150), -- Warna Hijau Neon (Keren)
+    Cmd_ON = "/airon",
+    Cmd_OFF = "/airoff"
+}
+
+-- --- VARIABLES ---
+local isActive = false
+local liftDirection = 0 -- 1 = Naik, -1 = Turun
+local currentY = 0
+local magicPart = nil
+local loopConnection = nil
+
+-- --- UI CONSTRUCTION ---
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "AirWalk_SmoothFast"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+if pcall(function() return CoreGui end) then
+    ScreenGui.Parent = CoreGui
+else
+    ScreenGui.Parent = Player:WaitForChild("PlayerGui")
+end
+
+-- Main Frame
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainUI"
+MainFrame.Size = UDim2.new(0, 150, 0, 210)
+MainFrame.Position = UDim2.new(0.05, 0, 0.4, 0)
+MainFrame.BackgroundColor3 = CFG.UI_Color
+MainFrame.BorderSizePixel = 0
+MainFrame.Visible = true
+MainFrame.Active = true
+MainFrame.Parent = ScreenGui
+
+local UICorner = Instance.new("UICorner"); UICorner.CornerRadius = UDim.new(0, 8); UICorner.Parent = MainFrame
+local UIStroke = Instance.new("UIStroke"); UIStroke.Color = Color3.fromRGB(80,80,80); UIStroke.Thickness = 1; UIStroke.Parent = MainFrame
+
+-- Drag Logic (Standar)
+local dragging, dragInput, dragStart, startPos
+local function updateDrag(input)
+    local delta = input.Position - dragStart
+    MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+end
+MainFrame.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true; dragStart = input.Position; startPos = MainFrame.Position
+        input.Changed:Connect(function() if input.UserInputState == Enum.UserInputState.End then dragging = false end end)
+    end
+end)
+MainFrame.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then dragInput = input end
+end)
+UserInputService.InputChanged:Connect(function(input) if input == dragInput and dragging then updateDrag(input) end end)
+
+-- UI Components
+local Title = Instance.new("TextLabel")
+Title.Text = "SMOOTH LIFT"
+Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1
+Title.TextColor3 = CFG.Accent_Color; Title.Font = Enum.Font.GothamBlack; Title.TextSize = 14; Title.Parent = MainFrame
+
+local function CreateBtn(text, yPos, color)
+    local btn = Instance.new("TextButton")
+    btn.Text = text; btn.BackgroundColor3 = color
+    btn.Size = UDim2.new(0.85, 0, 0, 35); btn.Position = UDim2.new(0.075, 0, yPos, 0)
+    btn.TextColor3 = Color3.new(1,1,1); btn.Font = Enum.Font.GothamBold; btn.TextSize = 14
+    btn.Parent = MainFrame
+    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 6); c.Parent = btn
+    return btn
+end
+
+local ToggleBtn = CreateBtn("OFF", 0.2, Color3.fromRGB(60, 60, 60))
+local UpBtn = CreateBtn("▲ NAIK", 0.45, CFG.Accent_Color)
+local DownBtn = CreateBtn("▼ TURUN", 0.7, CFG.Accent_Color)
+
+-- --- LOGIC UTAMA (PHYSICS BASED) ---
+
+local function Stop()
+    if loopConnection then loopConnection:Disconnect() loopConnection = nil end
+    if magicPart then magicPart:Destroy() magicPart = nil end
+    
+    -- Reset velocity karakter biar gak melayang aneh pas dimatikan
+    if Player.Character and Player.Character:FindFirstChild("HumanoidRootPart") then
+        local root = Player.Character.HumanoidRootPart
+        root.AssemblyLinearVelocity = Vector3.new(root.AssemblyLinearVelocity.X, 0, root.AssemblyLinearVelocity.Z)
+    end
+end
+
+local function Start(rootPart)
+    Stop() 
+
+    -- Buat Part Platform
+    local p = Instance.new("Part")
+    p.Name = "SmoothPlatform"
+    p.Size = CFG.PlatformSize
+    p.Anchored = true
+    p.CanCollide = true
+    p.Transparency = 0.5
+    p.Color = CFG.Accent_Color
+    p.Material = Enum.Material.Glass
+    p.Parent = workspace
+    magicPart = p
+    
+    -- Kalkulasi posisi awal
+    local humanoid = Player.Character:FindFirstChild("Humanoid")
+    local hipHeight = humanoid and humanoid.HipHeight or 2
+    
+    -- Posisi Y Lantai = Posisi Kaki - Setengah Tebal Lantai
+    local feetPos = rootPart.Position.Y - (rootPart.Size.Y / 2) - hipHeight
+    currentY = feetPos - (p.Size.Y / 2) + 0.5 -- Tambah dikit biar nempel
+    
+    -- Loop RenderStepped (Berjalan setiap frame render -> Sangat Smooth)
+    loopConnection = RunService.RenderStepped:Connect(function(dt)
+        if not isActive or not magicPart then return end
+        local char = Player.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if not root then return end
+        
+        -- Logic Gerak Horizontal (X, Z) -> Selalu di bawah player
+        -- Kita pakai math.round atau langsung set biar gak jitter horizontalnya
+        local targetPos = Vector3.new(root.Position.X, currentY, root.Position.Z)
+        
+        -- Logic Gerak Vertikal (Y)
+        if liftDirection == 1 then
+            -- NAIK
+            local moveStep = CFG.LiftSpeed * dt
+            currentY = currentY + moveStep
+            
+            -- [KUNCI SMOOTH & ANTI TEMBUS]
+            -- Kita set velocity vertikal player SAMA dengan kecepatan lantai.
+            -- Jadi physics engine tidak perlu menebak tabrakan, mereka bergerak sinkron.
+            local currentVel = root.AssemblyLinearVelocity
+            root.AssemblyLinearVelocity = Vector3.new(currentVel.X, CFG.LiftSpeed, currentVel.Z)
+            
+        elseif liftDirection == -1 then
+            -- TURUN
+            local moveStep = CFG.DropSpeed * dt
+            currentY = currentY - moveStep
+            
+            -- Saat turun, kita biarkan gravitasi bekerja, tapi kita batasi
+            -- velocity-nya sedikit agar tetap nempel jika turunnya super ngebut
+            root.AssemblyLinearVelocity = Vector3.new(root.AssemblyLinearVelocity.X, -CFG.DropSpeed, root.AssemblyLinearVelocity.Z)
+            
+        else
+            -- DIAM
+            -- Reset velocity Y biar gak licin
+            local currentVel = root.AssemblyLinearVelocity
+            if math.abs(currentVel.Y) > 0 and math.abs(currentVel.Y) < 10 then
+                 root.AssemblyLinearVelocity = Vector3.new(currentVel.X, 0, currentVel.Z)
+            end
+        end
+
+        -- Check Jarak (Kalau player lari/jatuh jauh dari platform)
+        local distV = math.abs((root.Position.Y - (root.Size.Y/2) - hipHeight) - (currentY + p.Size.Y/2))
+        local distH = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(magicPart.Position.X, 0, magicPart.Position.Z)).Magnitude
+        
+        -- Kalau jarak vertikal kejauhan (jatuh) atau horizontal kejauhan, teleport platform ke bawah kaki
+        if distV > 5 or distH > 20 then
+             currentY = root.Position.Y - (root.Size.Y / 2) - hipHeight - (p.Size.Y / 2)
+        end
+
+        -- Update Posisi Part
+        magicPart.CFrame = CFrame.new(root.Position.X, currentY, root.Position.Z)
+    end)
+end
+
+local function Toggle(forceState)
+    if forceState ~= nil then isActive = forceState else isActive = not isActive end
+
+    if isActive then
+        local char = Player.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if root then
+            ToggleBtn.Text = "ON"
+            ToggleBtn.TextColor3 = Color3.fromRGB(0, 255, 100)
+            Start(root)
+        else
+            isActive = false
+        end
+    else
+        ToggleBtn.Text = "OFF"
+        ToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        Stop()
+    end
+end
+
+-- --- EVENTS ---
+
+ToggleBtn.MouseButton1Click:Connect(function() Toggle() end)
+
+-- Button Logic (Hold to Move)
+UpBtn.MouseButton1Down:Connect(function() liftDirection = 1 end)
+UpBtn.MouseButton1Up:Connect(function() liftDirection = 0 end)
+UpBtn.MouseLeave:Connect(function() liftDirection = 0 end)
+
+DownBtn.MouseButton1Down:Connect(function() liftDirection = -1 end)
+DownBtn.MouseButton1Up:Connect(function() liftDirection = 0 end)
+DownBtn.MouseLeave:Connect(function() liftDirection = 0 end)
+
+Player.Chatted:Connect(function(msg)
+    local m = msg:lower()
+    if m == CFG.Cmd_OFF then MainFrame.Visible = false; Toggle(false)
+    elseif m == CFG.Cmd_ON then MainFrame.Visible = true end
+end)
+
+Player.CharacterAdded:Connect(function()
+    if isActive then Toggle(false) end; Stop()
+end)
+
+ScreenGui.Destroying:Connect(Stop)
