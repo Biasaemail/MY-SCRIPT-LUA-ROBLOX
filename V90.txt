@@ -47,7 +47,7 @@ local Playstyles = {"Longest", "Shortest", "Assassin", "Normal"}
 local currentStyleIndex = 3
 
 local AssassinEndings = {
-    x = 10000, z = 10000, q = 10000,
+    if = 10000, x = 10000, q = 10000,
     f = 5000, v = 5000, w = 5000, y = 5000,
     ai = 3000, au = 3000, oi = 3000, ui = 3000,
     di = 3000, ["if"] = 3000, af = 3000, ef = 3000,
@@ -553,7 +553,7 @@ function executeSmartAI()
     State.Executing = true
 
     task.spawn(function()
-        task.wait(math.random(90, 200) / 100)
+        task.wait(math.random(90, 187) / 100)
 
         while Config.AutoPlay and State.MatchActive and State.IsMyTurn and myTurnID == State.TurnID do
             local targetWord = getBestWord(State.ServerLetter)
