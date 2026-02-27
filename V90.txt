@@ -203,9 +203,10 @@ end
 -- 📚 TIME-BASED DATABASE LOADER (EXPANDED & O(1) INDEXING)
 -- =========================================================
 task.spawn(function()
-    local MIN_LEN   = 2
-    local MAX_LEN   = 40
-    local MAX_EXECUTION_TIME = 0.4 
+    local MIN_LEN            = 2
+    local MAX_LEN            = 40
+    local YIELD_INTERVAL     = 0.05  -- Yield setiap 50ms, bukan setiap 20k kata
+    local BATCH_SIZE         = 5000  -- Proses 5000 kata lalu cek waktu
 
     local gmatch    = string.gmatch
     local lower     = string.lower
@@ -219,7 +220,7 @@ task.spawn(function()
     local L2 = WordGroups.L2
     local L3 = WordGroups.L3
 
-    local canFileIO = isfolder and makefolder and listfiles and readfile
+    local canFileIO  = isfolder and makefolder and listfiles and readfile
     local canHttpGet = game.HttpGet ~= nil
 
     if not canFileIO and not canHttpGet then
@@ -229,56 +230,88 @@ task.spawn(function()
 
     if canFileIO and not isfolder("WORD") then makefolder("WORD") end
 
+    -- ── Blacklist ─────────────────────────────────────────────────────────────
     if canFileIO and isfile("WORD/blacklist.txt") then
         local ok, blContent = pcall(readfile, "WORD/blacklist.txt")
         if ok and blContent then
-            for word in gmatch(blContent, "[A-Za-z]+") do Blacklist[lower(word)] = true end
+            for word in gmatch(blContent, "[A-Za-z]+") do
+                Blacklist[lower(word)] = true
+            end
         end
     end
 
-    local contentQueue = {}
-    local totalSources = 0
+    -- ── URL Sources ───────────────────────────────────────────────────────────
+    local URLS = {
+        -- KBBI & umum
+        "https://raw.githubusercontent.com/damzaky/kumpulan-kata-bahasa-indonesia-KBBI/refs/heads/master/legacy/indonesian-words.txt",
+        "https://raw.githubusercontent.com/damzaky/kumpulan-kata-bahasa-indonesia-KBBI/refs/heads/master/list_1.0.0.txt",
+        "https://raw.githubusercontent.com/eenvyexe/KBBI/refs/heads/main/words.txt",
+        -- Sastrawi kata dasar
+        "https://raw.githubusercontent.com/sastrawi/sastrawi/master/data/kata-dasar.txt",
+        -- Bhinneka wordlist
+        "https://raw.githubusercontent.com/Bhinneka/indonesian-wordlist/master/indonesian-words.txt",
+        -- [EXTRA] sumber tambahan untuk memperkaya kosakata
+        "https://raw.githubusercontent.com/christos-c/bible-corpus/master/bibles/Indonesian.xml",  -- will parse words from xml tags too
+        "https://raw.githubusercontent.com/desmap/slick/master/packages/slick/indonesia.js",        -- JS word list, kata tetap ke-extract via pattern
+        "https://raw.githubusercontent.com/titipata/wikipedia-indo-corpus/master/data/vocab.txt",
+    }
 
-    updateStatusUI(" 🔄 Mengunduh & Membaca database...", Color3.fromRGB(100, 180, 255))
+    -- ── Parallel HTTP Fetch ───────────────────────────────────────────────────
+    local contentQueue  = {}
+    local totalSources  = 0
+    local fetchDone     = 0
+    local fetchTotal    = 0
 
+    updateStatusUI(" 🌐 Fetching semua sumber secara paralel...", Color3.fromRGB(100, 180, 255))
+
+    -- File I/O dulu (sinkron, cepat)
     if canFileIO and isfolder("WORD") then
         local rawFiles = listfiles("WORD")
-        for i = 1, #rawFiles do
-            local file = rawFiles[i]
-            if sub(lower(file), -4) == ".txt" and not match(lower(file), "blacklist%.txt$") then
+        for _, file in ipairs(rawFiles) do
+            local lf = lower(file)
+            if sub(lf, -4) == ".txt" and not match(lf, "blacklist%.txt$") then
                 local ok, content = pcall(readfile, file)
-                if ok and content then
+                if ok and content and #content > 0 then
                     totalSources = totalSources + 1
-                    contentQueue[totalSources] = { name = match(file, "[^/\\]+$") or file, text = content }
+                    contentQueue[totalSources] = {
+                        name = match(file, "[^/\\]+$") or file,
+                        text = content
+                    }
                 end
             end
         end
     end
 
+    -- HTTP fetch semua URL sekaligus (paralel penuh)
     if canHttpGet then
-        -- [NEW] Ditambahkan Sastrawi & Bhinneka Wordlist untuk perbendaharaan kata yang jauh lebih masif
-        local urls = {
-            "https://raw.githubusercontent.com/damzaky/kumpulan-kata-bahasa-indonesia-KBBI/refs/heads/master/legacy/indonesian-words.txt",
-            "https://raw.githubusercontent.com/damzaky/kumpulan-kata-bahasa-indonesia-KBBI/refs/heads/master/list_1.0.0.txt",
-            "https://raw.githubusercontent.com/eenvyexe/KBBI/refs/heads/main/words.txt",
-            "https://raw.githubusercontent.com/sastrawi/sastrawi/master/data/kata-dasar.txt",
-            "https://raw.githubusercontent.com/Bhinneka/indonesian-wordlist/master/indonesian-words.txt"
-        }
+        fetchTotal = #URLS
+        local results = {} -- indexed by i, untuk urutan tetap
 
-        local fetchCount = 0
-        for i, url in ipairs(urls) do
+        for i, url in ipairs(URLS) do
             task.spawn(function()
                 local ok, res = pcall(function() return game:HttpGet(url) end)
-                if ok and res and #res > 0 then
-                    totalSources = totalSources + 1
-                    local fileName = match(url, "[^/]+$") or ("WebDB_" .. i)
-                    contentQueue[totalSources] = { name = fileName, text = res }
+                if ok and res and #res > 100 then   -- minimal ada isi
+                    results[i] = {
+                        name = match(url, "[^/]+$") or ("Web_" .. i),
+                        text = res
+                    }
                 end
-                fetchCount = fetchCount + 1
+                fetchDone = fetchDone + 1
             end)
         end
 
-        while fetchCount < #urls do heartbeat:Wait() end
+        -- Tunggu semua fetch selesai tanpa busy-wait
+        while fetchDone < fetchTotal do
+            heartbeat:Wait()
+        end
+
+        -- Masukkan hasil ke queue (urutan konsisten)
+        for i = 1, fetchTotal do
+            if results[i] then
+                totalSources = totalSources + 1
+                contentQueue[totalSources] = results[i]
+            end
+        end
     end
 
     if totalSources == 0 then
@@ -286,27 +319,35 @@ task.spawn(function()
         return
     end
 
-    local tempDict   = {}
+    updateStatusUI(format(" ✅ %d sumber berhasil dimuat. Mulai ekstraksi...", totalSources), Color3.fromRGB(100, 220, 255))
+
+    -- ── Extraction Engine ─────────────────────────────────────────────────────
+    local tempDict   = {}   -- dedup set (hanya saat load)
     local totalWords = 0
     local duplicates = 0
     local filtered   = 0
-    
+
     local startTime  = clock()
     local lastYield  = clock()
 
     for i = 1, totalSources do
-        local source = contentQueue[i]
+        local source   = contentQueue[i]
         local fileWords = 0
-        local loopCounter = 0 
+        local batch    = 0
 
-        updateStatusUI(format(" ⏳ Ekstraksi: %s [%d/%d]", source.name, i, totalSources), Color3.fromRGB(100, 180, 255))
+        updateStatusUI(
+            format(" ⏳ [%d/%d] Ekstraksi: %s", i, totalSources, source.name),
+            Color3.fromRGB(100, 180, 255)
+        )
 
         for word in gmatch(source.text, "[A-Za-z]+") do
-            loopCounter = loopCounter + 1
-            
-            if loopCounter >= 20000 then
-                loopCounter = 0
-                if clock() - lastYield >= MAX_EXECUTION_TIME then
+            batch = batch + 1
+
+            -- Yield berbasis WAKTU, bukan jumlah kata — jauh lebih pintar
+            if batch >= BATCH_SIZE then
+                batch = 0
+                local now = clock()
+                if now - lastYield >= YIELD_INTERVAL then
                     heartbeat:Wait()
                     lastYield = clock()
                 end
@@ -315,14 +356,14 @@ task.spawn(function()
             local len = #word
             if len < MIN_LEN or len > MAX_LEN then
                 filtered = filtered + 1
-                continue 
+                continue
             end
 
             local lw = lower(word)
 
             if tempDict[lw] then
                 duplicates = duplicates + 1
-                continue 
+                continue
             end
 
             if Blacklist[lw] then
@@ -330,49 +371,62 @@ task.spawn(function()
                 continue
             end
 
-            tempDict[lw] = true
-            totalWords   = totalWords + 1
-            fileWords    = fileWords  + 1
-
+            -- ── Register kata ─────────────────────────────────────────────
+            tempDict[lw]         = true
+            totalWords           = totalWords + 1
+            fileWords            = fileWords  + 1
             Dictionary[totalWords] = lw
 
-            -- Fast Prefix Indexing & [NEW] O(1) Assassin Prefix Counting
+            -- ── Prefix Index (L1 / L2 / L3) ──────────────────────────────
             local c1 = sub(lw, 1, 1)
-            local l1Ref = L1[c1]
-            if not l1Ref then l1Ref = {}; L1[c1] = l1Ref end
-            l1Ref[#l1Ref + 1] = lw
+            local l1r = L1[c1]
+            if not l1r then l1r = {}; L1[c1] = l1r end
+            l1r[#l1r + 1] = lw
 
-            local c2 = sub(lw, 1, 2)
-            local l2Ref = L2[c2]
-            if not l2Ref then l2Ref = {}; L2[c2] = l2Ref end
-            l2Ref[#l2Ref + 1] = lw
-            PrefixCount[c2] = (PrefixCount[c2] or 0) + 1 -- Hitung jumlah kata dengan awalan ini
+            if len >= 2 then
+                local c2 = sub(lw, 1, 2)
+                local l2r = L2[c2]
+                if not l2r then l2r = {}; L2[c2] = l2r end
+                l2r[#l2r + 1] = lw
+                PrefixCount[c2] = (PrefixCount[c2] or 0) + 1
+            end
 
-            local c3 = sub(lw, 1, 3)
-            local l3Ref = L3[c3]
-            if not l3Ref then l3Ref = {}; L3[c3] = l3Ref end
-            l3Ref[#l3Ref + 1] = lw
-            PrefixCount[c3] = (PrefixCount[c3] or 0) + 1 -- Hitung jumlah kata dengan awalan ini
+            if len >= 3 then
+                local c3 = sub(lw, 1, 3)
+                local l3r = L3[c3]
+                if not l3r then l3r = {}; L3[c3] = l3r end
+                l3r[#l3r + 1] = lw
+                PrefixCount[c3] = (PrefixCount[c3] or 0) + 1
+            end
         end
 
-        contentQueue[i].text = nil 
-        
+        -- Bebas RAM secepatnya setelah tiap file selesai
+        contentQueue[i].text = nil
+
         if fileWords > 0 then
-            updateStatusUI(format(" 📄 %s → +%d kata baru", source.name, fileWords), Color3.fromRGB(150, 220, 180))
-            task.wait(0.2)
+            updateStatusUI(
+                format(" 📄 %s → +%d kata (total: %d)", source.name, fileWords, totalWords),
+                Color3.fromRGB(150, 220, 180)
+            )
+            heartbeat:Wait()  -- satu frame napas setelah tiap file
         end
     end
 
-    tempDict = nil
+    -- ── Cleanup ───────────────────────────────────────────────────────────────
+    tempDict     = nil
     contentQueue = nil
-    collectgarbage("collect") -- Bersihkan RAM setelah load masif
+    collectgarbage("collect")
 
     local elapsed = clock() - startTime
 
     if totalWords > 0 then
-        updateStatusUI(format(" ✅ DB Aktif: %d kata | %.2fs", totalWords, elapsed), Color3.fromRGB(100, 255, 150))
-        print(format("[Dictionary] Loaded: %d | Dupes: %d | Filtered: %d | Time: %.3fs", totalWords, duplicates, filtered, elapsed))
-        task.wait(3)
+        updateStatusUI(
+            format(" ✅ DB Aktif: %d kata | Dupes: %d | Filtered: %d | %.2fs", totalWords, duplicates, filtered, elapsed),
+            Color3.fromRGB(100, 255, 150)
+        )
+        print(format("[Dictionary] Loaded=%d | Dupes=%d | Filtered=%d | Sources=%d | Time=%.3fs",
+            totalWords, duplicates, filtered, totalSources, elapsed))
+        task.wait(4)
         updateStatusUI()
     else
         updateStatusUI(" ❌ Semua file kosong atau diblacklist!", Color3.fromRGB(255, 80, 80))
