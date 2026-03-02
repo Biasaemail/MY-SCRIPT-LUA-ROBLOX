@@ -166,7 +166,7 @@ local parentGui = (gethui and gethui()) or CoreGui
 if parentGui:FindFirstChild(uiName) then parentGui[uiName]:Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui"); ScreenGui.Name = uiName; ScreenGui.ResetOnSpawn = false; ScreenGui.Parent = parentGui
-local MainFrame = Instance.new("Frame"); MainFrame.Size = UDim2.new(0, 200, 0, 260); MainFrame.Position = UDim2.new(0.7, 0, 0.3, 0)
+local MainFrame = Instance.new("Frame"); MainFrame.Size = UDim2.new(0, 200, 0, 299); MainFrame.Position = UDim2.new(0.7, 0, 0.3, 0)
 MainFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 20); MainFrame.BackgroundTransparency = 0.35 
 MainFrame.BorderSizePixel = 0; MainFrame.ClipsDescendants = true; MainFrame.Parent = ScreenGui
 Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
