@@ -38,9 +38,9 @@ local totalWords = 0
 local sbyte, lower, sub, random = string.byte, string.lower, string.sub, math.random
 
 local KeyboardAdjacent = {
-    a="qwsz", b="vghn", c="xdfv", d="ersfxc", e="wrdf", f="rtgdcv", g="tyfhvb", h="yugjbn",
-    i="uokj", j="uikmhn", k="iolmj", l="opk", m="njk", n="bhjm", o="iplk", p="ol", q="wa",
-    r="etdf", s="awedxz", t="ryfg", u="yihj", v="cfgb", w="qeas", x="zsdc", y="tuhg", z="asx"
+    a="sz", b="n", c="v", d="xc", e="df", f="rv", g="tb", h="bn",
+    i="uo", j="uin", k="ij", l="ok", m="k", n="m", o="lk", p="ol", q="wa",
+    r="ef", s="az", t="g", u="yj", v="gb", w="qs", x="zc", y="g", z="a"
 }
 
 -- =========================================================
