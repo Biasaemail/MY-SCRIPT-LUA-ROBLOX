@@ -1,0 +1,643 @@
+-- =========================================================
+-- 🌟 AUTO TYPE V19.5 - THE APEX EDITION 🌟
+--[Safe Game Dict | O(1) Memory Map | Premium GUI | 10% Typo]
+-- by moonmango (Modified)
+-- =========================================================
+
+local CoreGui = game:GetService("CoreGui")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+
+local remotes = ReplicatedStorage:WaitForChild("Remotes")
+local LocalPlayer = Players.LocalPlayer
+
+-- =========================================================
+-- 🧠 STATE & CONFIGURATION
+-- =========================================================
+local Config = { TypingDelayMS = 120, AutoPlay = false, Humanize = true, Playstyle = "Menang Cepat" }
+local State = {
+    MatchActive = false, IsMyTurn = false, ServerLetter = "",
+    UsedWords = {}, TriedThisTurn = {}, PermanentBlacklist = {}, VerifiedWords = {},
+    IndexWords = {}, 
+    TurnID = 0, IsTyping = false, HasSubmitted = false, BotExecuting = false, 
+    ValidationResult = nil, LastSubmittedWord = ""
+}
+
+local Playstyles = {"Menang Cepat", "Combo Killer", "Longest", "Shortest", "Normal", "Complete Index", "Troll Taunt", "Troll AFK"}
+local currentStyleIndex = 1
+
+local TauntMessages = {
+    "ez banget dek", "lagi mikir ya?", "kamu cupu", "wkwkwk", 
+    "kok diam?", "menyerah saja", "bot mode on", "terlalu mudah",
+    "aku pro", "bisa main ga?"
+}
+
+-- 🌳 O(1) PREFIX HASH MAP (REPLACED TRIE TO FIX MEMORY LEAK)
+local Dictionary = {} 
+local PrefixMap = {} -- Format: {["a"] = {1, 5, 9}, ["ab"] = {1, 9} }
+local WordsStartingWith = {} 
+local KnownWords = {} 
+local totalWords = 0
+
+local sbyte, lower, sub, random = string.byte, string.lower, string.sub, math.random
+
+local KeyboardAdjacent = {
+    a="sz", b="n", c="v", d="xc", e="df", f="rv", g="tb", h="bn",
+    i="uo", j="uin", k="ij", l="ok", m="k", n="m", o="lk", p="ol", q="wa",
+    r="ef", s="az", t="g", u="yj", v="gb", w="qs", x="zc", y="g", z="a"
+}
+
+-- =========================================================
+-- 💾 BATCH I/O MANAGER
+-- =========================================================
+local WriteQueue = { blacklist = {}, verified = {}, cache = {} }
+local function ensureFolder() if isfolder and not isfolder("WORD") then pcall(makefolder, "WORD") end end
+
+local function queueWrite(type, word) table.insert(WriteQueue[type], word) end
+
+local function flushWriteQueue()
+    ensureFolder()
+    for fileType, queue in pairs(WriteQueue) do
+        if #queue > 0 then
+            local data = table.concat(queue, "\n") .. "\n"
+            local filename = fileType == "cache" and "master_cache.txt" or (fileType .. ".txt")
+            if appendfile then pcall(function() appendfile("WORD/" .. filename, data) end)
+            elseif writefile and readfile then
+                pcall(function()
+                    local existing = isfile and isfile("WORD/" .. filename) and readfile("WORD/" .. filename) or ""
+                    writefile("WORD/" .. filename, existing .. data)
+                end)
+            end
+            table.clear(queue)
+        end
+    end
+end
+
+task.spawn(function() while true do task.wait(3); flushWriteQueue() end end)
+
+-- =========================================================
+-- 📚 UNIFIED WORD PROCESSOR (DRY CODE)
+-- =========================================================
+local function addWordToDB(word, isNewFromWeb, isVerified)
+    local lw = lower(word)
+    if lw == "" or KnownWords[lw] or State.PermanentBlacklist[lw] then return false end
+    
+    KnownWords[lw] = true
+    totalWords = totalWords + 1
+    Dictionary[totalWords] = lw
+
+    local len = #lw
+    
+    -- Insert ke PrefixMap untuk pencarian O(1) (Maksimal 3 huruf sesuai logic game)
+    for i = 1, math.min(3, len) do
+        local prefix = sub(lw, 1, i)
+        if not PrefixMap[prefix] then PrefixMap[prefix] = {} end
+        table.insert(PrefixMap[prefix], totalWords)
+        WordsStartingWith[prefix] = (WordsStartingWith[prefix] or 0) + 1
+    end
+    
+    if isNewFromWeb then queueWrite("cache", lw) end
+    if isVerified then State.VerifiedWords[lw] = true; queueWrite("verified", lw) end
+    return true
+end
+
+local BATCH_SIZE = 10000 
+local function processBulkChunk(content, isNew, flushAfter)
+    local clock = os.clock
+    local heartbeat = RunService.Heartbeat
+    local batch = 0
+    
+    -- [IMPROVEMENT] Regex [%a%-]+ menangkap kata dengan tanda hubung (kupu-kupu)
+    for word in content:gmatch("[%a%-]+") do
+        if addWordToDB(word, isNew, false) then
+            batch = batch + 1
+            if batch >= BATCH_SIZE then batch = 0; heartbeat:Wait() end
+        end
+    end
+    if flushAfter then collectgarbage("collect") end
+end
+
+-- =========================================================
+-- 🛡️ SMART VALIDATION & INDEX TRACKER
+-- =========================================================
+if remotes:FindFirstChild("PlayerHit") then
+    remotes.PlayerHit.OnClientEvent:Connect(function(target)
+        local isMe = false
+        if typeof(target) == "Instance" and target == LocalPlayer then isMe = true end
+        if type(target) == "string" and target == LocalPlayer.Name then isMe = true end
+        if isMe and State.IsTyping and State.HasSubmitted then State.ValidationResult = "INVALID" end
+    end)
+end
+
+if remotes:FindFirstChild("PlayerCorrect") then
+    remotes.PlayerCorrect.OnClientEvent:Connect(function()
+        if State.LastSubmittedWord ~= "" then
+            local lw = lower(State.LastSubmittedWord)
+            if not State.VerifiedWords[lw] then addWordToDB(lw, false, true) end
+            State.ValidationResult = "SUCCESS"
+        end
+    end)
+end
+
+if remotes:FindFirstChild("UpdateWordIndex") then
+    remotes.UpdateWordIndex.OnClientEvent:Connect(function(data)
+        if type(data) == "table" then
+            if data.AllWords then
+                for word, _ in pairs(data.AllWords) do State.IndexWords[lower(word)] = true end
+            elseif data.NewWord then
+                State.IndexWords[lower(data.NewWord)] = true
+            end
+        end
+    end)
+end
+
+if remotes:FindFirstChild("RequestWordIndex") then remotes.RequestWordIndex:FireServer() end
+
+-- =========================================================
+-- 🎨 PREMIUM GUI V19.5 (SMOOTH & ELEGANT)
+-- =========================================================
+local uiName = "AutoType_V19_5_Apex"
+local parentGui = (gethui and gethui()) or CoreGui
+if parentGui:FindFirstChild(uiName) then parentGui[uiName]:Destroy() end
+
+local ScreenGui = Instance.new("ScreenGui"); ScreenGui.Name = uiName; ScreenGui.ResetOnSpawn = false; ScreenGui.Parent = parentGui
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Size = UDim2.new(0, 240, 0, 290) 
+MainFrame.Position = UDim2.new(0.7, 0, 0.3, 0)
+MainFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+MainFrame.BorderSizePixel = 0
+MainFrame.ClipsDescendants = true
+MainFrame.Parent = ScreenGui
+
+-- Premium Gradient Background
+local MainGradient = Instance.new("UIGradient", MainFrame)
+MainGradient.Color = ColorSequence.new{
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(15, 15, 25)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(10, 10, 15))
+}
+MainGradient.Rotation = 45
+
+local UIScale = Instance.new("UIScale", MainFrame); UIScale.Scale = 0 
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 12)
+local UIStroke = Instance.new("UIStroke", MainFrame); UIStroke.Color = Color3.fromRGB(100, 150, 255); UIStroke.Transparency = 0.2; UIStroke.Thickness = 1.5
+
+local TopBar = Instance.new("Frame"); TopBar.Size = UDim2.new(1, 0, 0, 38); TopBar.BackgroundTransparency = 1; TopBar.Active = true; TopBar.Parent = MainFrame
+local TitleLabel = Instance.new("TextLabel"); TitleLabel.Size = UDim2.new(0, 130, 1, 0); TitleLabel.Position = UDim2.new(0, 14, 0, 0)
+TitleLabel.BackgroundTransparency = 1; TitleLabel.Text = "AUTO TYPE V19.5"; TitleLabel.TextColor3 = Color3.fromRGB(255, 255, 255); TitleLabel.Font = Enum.Font.GothamBlack; TitleLabel.TextSize = 12; TitleLabel.TextXAlignment = Enum.TextXAlignment.Left; TitleLabel.Parent = TopBar
+
+local SettingsBtn = Instance.new("TextButton"); SettingsBtn.Size = UDim2.new(0, 28, 0, 38); SettingsBtn.Position = UDim2.new(1, -84, 0, 0)
+SettingsBtn.BackgroundTransparency = 1; SettingsBtn.Text = "⚙️"; SettingsBtn.TextColor3 = Color3.fromRGB(200, 200, 200); SettingsBtn.Font = Enum.Font.GothamBold; SettingsBtn.TextSize = 14; SettingsBtn.ZIndex = 2; SettingsBtn.Parent = TopBar
+
+local MinBtn = Instance.new("TextButton"); MinBtn.Size = UDim2.new(0, 28, 0, 38); MinBtn.Position = UDim2.new(1, -56, 0, 0)
+MinBtn.BackgroundTransparency = 1; MinBtn.Text = "—"; MinBtn.TextColor3 = Color3.fromRGB(200, 200, 200); MinBtn.Font = Enum.Font.GothamBold; MinBtn.TextSize = 14; MinBtn.ZIndex = 2; MinBtn.Parent = TopBar
+
+local CloseBtn = Instance.new("TextButton"); CloseBtn.Size = UDim2.new(0, 28, 0, 38); CloseBtn.Position = UDim2.new(1, -28, 0, 0)
+CloseBtn.BackgroundTransparency = 1; CloseBtn.Text = "✕"; CloseBtn.TextColor3 = Color3.fromRGB(255, 80, 80); CloseBtn.Font = Enum.Font.GothamBold; CloseBtn.TextSize = 14; CloseBtn.ZIndex = 2; CloseBtn.Parent = TopBar
+
+local StatusLabel = Instance.new("TextLabel"); StatusLabel.Size = UDim2.new(1, -24, 0, 20); StatusLabel.Position = UDim2.new(0, 12, 0, 38)
+StatusLabel.BackgroundTransparency = 1; StatusLabel.Text = "⏳ Memuat Database..."; StatusLabel.TextColor3 = Color3.fromRGB(100, 180, 255); StatusLabel.Font = Enum.Font.GothamSemibold; StatusLabel.TextSize = 11; StatusLabel.TextXAlignment = Enum.TextXAlignment.Left; StatusLabel.Parent = MainFrame
+
+local ScrollFrame = Instance.new("ScrollingFrame"); ScrollFrame.Size = UDim2.new(1, -16, 1, -70); ScrollFrame.Position = UDim2.new(0, 8, 0, 62)
+ScrollFrame.BackgroundTransparency = 1; ScrollFrame.ScrollBarThickness = 2; ScrollFrame.ScrollBarImageColor3 = Color3.fromRGB(100, 150, 255); ScrollFrame.CanvasSize = UDim2.new(0, 0, 0, 0); ScrollFrame.Parent = MainFrame
+local GridLayout = Instance.new("UIGridLayout"); GridLayout.CellSize = UDim2.new(0.48, 0, 0, 26); GridLayout.CellPadding = UDim2.new(0.03, 0, 0, 6); GridLayout.SortOrder = Enum.SortOrder.LayoutOrder; GridLayout.Parent = ScrollFrame
+GridLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function() ScrollFrame.CanvasSize = UDim2.new(0, 0, 0, GridLayout.AbsoluteContentSize.Y + 5) end)
+
+TweenService:Create(UIScale, TweenInfo.new(0.6, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Scale = 1}):Play()
+
+-- =========================================================
+-- ⚙️ SETTINGS PANEL
+-- =========================================================
+local SettingsPanel = Instance.new("Frame"); SettingsPanel.Size = UDim2.new(1, 0, 1, -38); SettingsPanel.Position = UDim2.new(0, 0, 1, 0)
+SettingsPanel.BackgroundColor3 = Color3.fromRGB(15, 15, 20); SettingsPanel.BackgroundTransparency = 0.05; SettingsPanel.BorderSizePixel = 0; SettingsPanel.ZIndex = 5; SettingsPanel.Parent = MainFrame
+local SetLayout = Instance.new("UIListLayout"); SetLayout.SortOrder = Enum.SortOrder.LayoutOrder; SetLayout.Padding = UDim.new(0, 10); SetLayout.Parent = SettingsPanel
+local SetPad = Instance.new("UIPadding"); SetPad.PaddingTop = UDim.new(0, 14); SetPad.PaddingLeft = UDim.new(0, 14); SetPad.PaddingRight = UDim.new(0, 14); SetPad.Parent = SettingsPanel
+
+local isSettingsOpen = false
+SettingsBtn.MouseButton1Click:Connect(function()
+    isSettingsOpen = not isSettingsOpen
+    if isSettingsOpen then
+        SettingsBtn.TextColor3 = Color3.fromRGB(100, 180, 255)
+        TweenService:Create(SettingsPanel, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Position = UDim2.new(0, 0, 0, 38)}):Play()
+    else
+        SettingsBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+        TweenService:Create(SettingsPanel, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {Position = UDim2.new(0, 0, 1, 0)}):Play()
+    end
+end)
+
+local function createToggle(parent, text, default, callback)
+    local frame = Instance.new("Frame"); frame.Size = UDim2.new(1, 0, 0, 24); frame.BackgroundTransparency = 1; frame.ZIndex = 6; frame.Parent = parent
+    local lbl = Instance.new("TextLabel"); lbl.Size = UDim2.new(0.6, 0, 1, 0); lbl.BackgroundTransparency = 1; lbl.Text = text; lbl.TextColor3 = Color3.fromRGB(240, 240, 240); lbl.Font = Enum.Font.GothamMedium; lbl.TextSize = 11; lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.ZIndex = 6; lbl.Parent = frame
+    local bg = Instance.new("TextButton"); bg.Size = UDim2.new(0, 36, 0, 18); bg.Position = UDim2.new(1, -36, 0.5, -9); bg.BackgroundColor3 = default and Color3.fromRGB(100, 150, 255) or Color3.fromRGB(50, 50, 60); bg.Text = ""; bg.AutoButtonColor = false; bg.ZIndex = 6; Instance.new("UICorner", bg).CornerRadius = UDim.new(1, 0); bg.Parent = frame
+    local knob = Instance.new("Frame"); knob.Size = UDim2.new(0, 14, 0, 14); knob.Position = default and UDim2.new(1, -16, 0.5, -7) or UDim2.new(0, 2, 0.5, -7); knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255); knob.ZIndex = 6; Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0); knob.Parent = bg
+    local state = default
+    bg.MouseButton1Click:Connect(function()
+        state = not state
+        TweenService:Create(knob, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Position = state and UDim2.new(1, -16, 0.5, -7) or UDim2.new(0, 2, 0.5, -7)}):Play()
+        TweenService:Create(bg, TweenInfo.new(0.3), {BackgroundColor3 = state and Color3.fromRGB(100, 150, 255) or Color3.fromRGB(50, 50, 60)}):Play()
+        callback(state)
+    end)
+end
+
+createToggle(SettingsPanel, "🤖 Auto Play", Config.AutoPlay, function(val) Config.AutoPlay = val end)
+createToggle(SettingsPanel, "👤 Humanizer", Config.Humanize, function(val) Config.Humanize = val end)
+
+local ModeBtn = Instance.new("TextButton"); ModeBtn.Size = UDim2.new(1, 0, 0, 28); ModeBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 30); ModeBtn.BackgroundTransparency = 0.2; ModeBtn.Text = "Mode: " .. Config.Playstyle; ModeBtn.TextColor3 = Color3.fromRGB(240, 240, 240); ModeBtn.Font = Enum.Font.GothamBold; ModeBtn.TextSize = 11; ModeBtn.ZIndex = 6; Instance.new("UICorner", ModeBtn).CornerRadius = UDim.new(0, 6); local ModeStroke = Instance.new("UIStroke", ModeBtn); ModeStroke.Color = Color3.fromRGB(100, 150, 255); ModeStroke.Thickness = 1.2; ModeBtn.Parent = SettingsPanel
+ModeBtn.MouseButton1Click:Connect(function() 
+    currentStyleIndex = (currentStyleIndex % #Playstyles) + 1; Config.Playstyle = Playstyles[currentStyleIndex]; ModeBtn.Text = "Mode: " .. Config.Playstyle 
+    TweenService:Create(ModeStroke, TweenInfo.new(0.15), {Color = Color3.fromRGB(255, 255, 255)}):Play()
+    task.wait(0.15); TweenService:Create(ModeStroke, TweenInfo.new(0.15), {Color = Color3.fromRGB(100, 150, 255)}):Play()
+end)
+
+local SliderFrame = Instance.new("Frame"); SliderFrame.Size = UDim2.new(1, 0, 0, 30); SliderFrame.BackgroundTransparency = 1; SliderFrame.ZIndex = 6; SliderFrame.Parent = SettingsPanel
+local SliderLabel = Instance.new("TextLabel"); SliderLabel.Size = UDim2.new(1, 0, 0, 14); SliderLabel.BackgroundTransparency = 1; SliderLabel.Text = "Speed: " .. Config.TypingDelayMS .. "ms"; SliderLabel.TextColor3 = Color3.fromRGB(200, 200, 200); SliderLabel.Font = Enum.Font.GothamMedium; SliderLabel.TextSize = 11; SliderLabel.TextXAlignment = Enum.TextXAlignment.Left; SliderLabel.ZIndex = 6; SliderLabel.Parent = SliderFrame
+local Track = Instance.new("TextButton"); Track.Size = UDim2.new(1, 0, 0, 6); Track.Position = UDim2.new(0, 0, 1, -8); Track.BackgroundColor3 = Color3.fromRGB(50, 50, 60); Track.Text = ""; Track.AutoButtonColor = false; Track.ZIndex = 6; Instance.new("UICorner", Track).CornerRadius = UDim.new(1, 0); Track.Parent = SliderFrame
+local Fill = Instance.new("Frame"); Fill.Size = UDim2.new((Config.TypingDelayMS - 1) / 899, 0, 1, 0); Fill.BackgroundColor3 = Color3.fromRGB(100, 150, 255); Fill.ZIndex = 6; Instance.new("UICorner", Fill).CornerRadius = UDim.new(1, 0); Fill.Parent = Track
+local Knob = Instance.new("Frame"); Knob.Size = UDim2.new(0, 14, 0, 14); Knob.Position = UDim2.new(1, -7, 0.5, -7); Knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255); Knob.ZIndex = 6; Instance.new("UICorner", Knob).CornerRadius = UDim.new(1, 0); Knob.Parent = Fill
+
+local sliding = false
+local function updateSlider(input) local pos = math.clamp((input.Position.X - Track.AbsolutePosition.X) / Track.AbsoluteSize.X, 0, 1); Fill.Size = UDim2.new(pos, 0, 1, 0); local val = math.floor(1 + (899 * pos)); Config.TypingDelayMS = val; SliderLabel.Text = "Speed: " .. val .. "ms" end
+Track.InputBegan:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then sliding = true; updateSlider(input) end end)
+UserInputService.InputEnded:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then sliding = false end end)
+UserInputService.InputChanged:Connect(function(input) if sliding and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then updateSlider(input) end end)
+
+local ResetBtn = Instance.new("TextButton"); ResetBtn.Size = UDim2.new(1, 0, 0, 26); ResetBtn.BackgroundColor3 = Color3.fromRGB(255, 80, 80); ResetBtn.BackgroundTransparency = 0.8; ResetBtn.Text = "🗑️ Reset Blacklist"; ResetBtn.TextColor3 = Color3.fromRGB(255, 150, 150); ResetBtn.Font = Enum.Font.GothamBold; ResetBtn.TextSize = 11; ResetBtn.ZIndex = 6; Instance.new("UICorner", ResetBtn).CornerRadius = UDim.new(0, 6); ResetBtn.Parent = SettingsPanel
+ResetBtn.MouseButton1Click:Connect(function() State.PermanentBlacklist = {}; if writefile then pcall(function() writefile("WORD/blacklist.txt", "") end) end; ResetBtn.Text = "Cleared!"; task.wait(1); ResetBtn.Text = "🗑️ Reset Blacklist" end)
+
+local isMinimized = false
+MinBtn.MouseButton1Click:Connect(function()
+    isMinimized = not isMinimized
+    if isMinimized then 
+        ScrollFrame.Visible = false; StatusLabel.Visible = false; SettingsBtn.Visible = false; SettingsPanel.Visible = false
+        TweenService:Create(MainFrame, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Size = UDim2.new(0, 240, 0, 38)}):Play()
+    else 
+        TweenService:Create(MainFrame, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Size = UDim2.new(0, 240, 0, 290)}):Play()
+        task.wait(0.2); ScrollFrame.Visible = true; StatusLabel.Visible = true; SettingsBtn.Visible = true; SettingsPanel.Visible = true
+    end
+end)
+
+CloseBtn.MouseButton1Click:Connect(function()
+    TweenService:Create(UIScale, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {Scale = 0}):Play()
+    task.wait(0.4); ScreenGui:Destroy()
+end)
+
+local dragging, dragInput, dragStart, startPos
+TopBar.InputBegan:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then dragging = true; dragStart = input.Position; startPos = MainFrame.Position; input.Changed:Connect(function() if input.UserInputState == Enum.UserInputState.End then dragging = false end end) end end)
+TopBar.InputChanged:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then dragInput = input end end)
+UserInputService.InputChanged:Connect(function(input) if input == dragInput and dragging then local delta = input.Position - dragStart; MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y) end end)
+
+local function updateStatusUI(customMsg, color)
+    if customMsg then StatusLabel.Text = customMsg; StatusLabel.TextColor3 = color or Color3.fromRGB(255, 255, 255); return end
+    if #Dictionary == 0 then return end
+    if State.IsMyTurn then StatusLabel.Text = "🔥 Awalan: " .. State.ServerLetter:upper(); StatusLabel.TextColor3 = Color3.fromRGB(100, 255, 150)
+    else StatusLabel.Text = "💤 Menunggu giliran..."; StatusLabel.TextColor3 = Color3.fromRGB(150, 150, 150) end
+end
+
+local ButtonPool = {}
+local function getPoolButton(index)
+    if not ButtonPool[index] then
+        local btn = Instance.new("TextButton")
+        btn.BackgroundColor3 = Color3.fromRGB(25, 25, 35); btn.BackgroundTransparency = 0.3
+        btn.TextColor3 = Color3.fromRGB(240, 240, 240); btn.Font = Enum.Font.GothamMedium; btn.TextSize = 11; btn.TextTruncate = Enum.TextTruncate.AtEnd
+        btn.AutoButtonColor = false; btn.Parent = ScrollFrame
+        Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+        local stroke = Instance.new("UIStroke", btn); stroke.Color = Color3.fromRGB(70, 70, 90); stroke.Transparency = 0.2; stroke.Thickness = 1.2
+        
+        btn.MouseEnter:Connect(function() 
+            if btn.Interactable then 
+                TweenService:Create(btn, TweenInfo.new(0.2, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {BackgroundColor3 = Color3.fromRGB(40, 50, 80), BackgroundTransparency = 0}):Play()
+                TweenService:Create(stroke, TweenInfo.new(0.2), {Color = Color3.fromRGB(120, 180, 255)}):Play()
+            end 
+        end)
+        btn.MouseLeave:Connect(function() 
+            if btn.Interactable then 
+                TweenService:Create(btn, TweenInfo.new(0.2, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {BackgroundColor3 = Color3.fromRGB(25, 25, 35), BackgroundTransparency = 0.3}):Play()
+                TweenService:Create(stroke, TweenInfo.new(0.2), {Color = Color3.fromRGB(70, 70, 90)}):Play()
+            end 
+        end)
+        
+        ButtonPool[index] = {btn = btn, stroke = stroke, word = ""}
+        btn.MouseButton1Click:Connect(function() if ButtonPool[index].word ~= "" then typeAndSubmitWord(ButtonPool[index].word, btn) end end)
+    end
+    local p = ButtonPool[index]
+    p.btn.Visible = true; p.btn.Interactable = true; p.btn.BackgroundColor3 = Color3.fromRGB(25, 25, 35); p.btn.BackgroundTransparency = 0.3; p.btn.TextColor3 = Color3.fromRGB(240, 240, 240); p.stroke.Color = Color3.fromRGB(70, 70, 90)
+    return p
+end
+
+local function hideAllButtons() for _, p in ipairs(ButtonPool) do p.btn.Visible = false; p.word = "" end end
+
+-- =========================================================
+-- 📚 ENGINE INITIALIZATION (SAFE GAME DICT + WEB DBs)
+-- =========================================================
+local function fetchWithRetry(url, maxRetries)
+    for i = 1, maxRetries do
+        local ok, res = pcall(function() return game:HttpGet(url) end)
+        if ok and res and #res > 100 then return res end
+        if i < maxRetries then task.wait(0.5) end 
+    end
+    return nil
+end
+
+task.spawn(function()
+    local heartbeat = RunService.Heartbeat
+
+    -- 1️⃣ [NEW] SAFE GAME DICTIONARY EXTRACTION (ANTI-HONEYPOT)
+    updateStatusUI("🔥 Mengekstrak Kamus Asli Game...", Color3.fromRGB(255, 215, 0))
+    local honeypotWords = {["auto"]=true, ["cheat"]=true, ["script"]=true, ["hack"]=true, ["exploit"]=true, ["saya"]=true}
+    local ok, gameDict = pcall(function()
+        return require(ReplicatedStorage:WaitForChild("WordList", 3):WaitForChild("IndonesianWords", 3))
+    end)
+    
+    if ok and type(gameDict) == "table" then
+        local extracted = 0
+        for _, w in ipairs(gameDict) do
+            local lw = lower(w)
+            if not honeypotWords[lw] and #lw >= 2 then
+                if addWordToDB(lw, false, true) then extracted = extracted + 1 end
+            end
+        end
+        updateStatusUI("✅ Kamus Game Aman: " .. extracted .. " Kata!", Color3.fromRGB(100, 255, 150))
+        task.wait(1.5)
+    end
+
+    -- 2️⃣ Load Blacklist & Verified Local
+    if isfile and isfile("WORD/blacklist.txt") then
+        local ok2, content = pcall(readfile, "WORD/blacklist.txt")
+        if ok2 and content then for word in content:gmatch("[%a%-]+") do State.PermanentBlacklist[lower(word)] = true end end
+    end
+    if isfile and isfile("WORD/verified.txt") then
+        local ok3, content = pcall(readfile, "WORD/verified.txt")
+        if ok3 and content then for word in content:gmatch("[%a%-]+") do addWordToDB(word, false, true) end end
+    end
+    if isfile and isfile("WORD/master_cache.txt") then
+        local ok4, content = pcall(readfile, "WORD/master_cache.txt")
+        if ok4 and content then processBulkChunk(content, false, false) end
+    end
+
+    -- 3️⃣ 11 WEB DBs
+    local urls = {
+        "https://raw.githubusercontent.com/damzaky/kumpulan-kata-bahasa-indonesia-KBBI/refs/heads/master/legacy/indonesian-words.txt",
+        "https://raw.githubusercontent.com/sastrawi/sastrawi/master/data/kata-dasar.txt",
+        "https://raw.githubusercontent.com/Bhinneka/indonesian-wordlist/master/indonesian-words.txt",
+        "https://raw.githubusercontent.com/Wikidepia/indonesian_datasets/refs/heads/master/dictionary/wordlist/data/wordlist.txt",
+        "https://cdn.jsdelivr.net/gh/Biasaemail/SCRIPT-ROBLOX-LUA-ME@refs/heads/main/50000_kata_kbbi_baku.txt",
+        "https://cdn.jsdelivr.net/gh/Biasaemail/SCRIPT-ROBLOX-LUA-ME@refs/heads/main/kbbi_72276_kata_baku.txt",
+        "https://raw.githubusercontent.com/titoBouzout/Dictionaries/master/Indonesian.txt",
+        "https://raw.githubusercontent.com/lorenbrichter/Words/master/Words/id.txt",
+        "https://raw.githubusercontent.com/open-dict-data/ipa-dict/master/data/id.txt",
+        "https://cdn.jsdelivr.net/gh/Biasaemail/MY-SCRIPT-LUA-ROBLOX@refs/heads/main/wordlist.txt",
+        "https://cdn.jsdelivr.net/gh/Biasaemail/MY-SCRIPT-LUA-ROBLOX@refs/heads/main/wordlist_kbbi_akhiran_sulit.txt"
+    }
+
+    updateStatusUI("🚀 Sinkronisasi 11 Web DB...", Color3.fromRGB(100, 200, 255))
+    local completedCount = 0
+    for i, url in ipairs(urls) do
+        task.spawn(function()
+            local res = fetchWithRetry(url, 3)
+            if res then processBulkChunk(res, true, false); res = nil end
+            completedCount = completedCount + 1
+            updateStatusUI(string.format("⚡ %d/%d DB · %d kata", completedCount, #urls, totalWords), Color3.fromRGB(100, 200, 255))
+        end)
+    end
+
+    while completedCount < #urls do heartbeat:Wait() end
+    flushWriteQueue(); collectgarbage("collect")
+    
+    updateStatusUI("✅ Ready! " .. totalWords .. " Kata 🔥", Color3.fromRGB(100, 255, 150))
+    task.wait(2); updateStatusUI()
+end)
+
+-- =========================================================
+-- 🧠 TRUE ASSASSIN AI & TROLL SCORING
+-- =========================================================
+local DeadlyEndings = {["tif"]=200000, ["wer"]=200000, ["uha"]=200000,
+    ["if"]=150000, ["ex"]=150000, ["ox"]=150000, ["ef"]=100000, ["of"]=100000, ["af"]=100000, ["uf"]=100000,
+    ["nk"]=80000, ["nc"]=80000,["ps"]=80000,["rs"]=80000, ["ny"]=60000, ["ng"]=50000,
+    x=100000, z=100000, q=100000, f=90000, v=90000, w=80000
+}
+
+local function getWordScore(word, mode, prefixLen)
+    local len = #word
+    local s1 = sub(word, -1)
+    local s2 = len >= 2 and sub(word, -2) or s1
+    local s3 = len >= 3 and sub(word, -3) or s2
+
+    local count1 = WordsStartingWith[s1] or 0
+    local count2 = WordsStartingWith[s2] or 0
+    local count3 = WordsStartingWith[s3] or 0
+
+    if mode == "Complete Index" then
+        local baseScore = random(1, 100) + (len > 4 and 20 or 0)
+        if not State.IndexWords[word] then return baseScore + 500000 else return baseScore - 10000 end
+        
+    elseif mode == "Menang Cepat" or mode == "Combo Killer" or mode == "Troll Taunt" or mode == "Troll AFK" then
+        local score = 50000
+        if count1 < 50 then score = score + 300000 elseif count1 < 150 then score = score + 150000 end
+        if count3 >= 3 and count3 <= 10 then score = score + 250000 end
+        if count2 >= 3 and count2 <= 10 then score = score + 100000 end
+        
+        local staticBonus = DeadlyEndings[s3] or DeadlyEndings[s2] or DeadlyEndings[s1] or 0
+        return score + staticBonus + (len * 10)
+        
+    elseif mode == "Longest" then return len * 100
+    elseif mode == "Shortest" then 
+        local diff = len - prefixLen
+        if diff <= 0 then return -9999 end
+        return 10000 - (diff * 100)
+    else return random(1, 100) + (len > 4 and 20 or 0) end
+end
+
+-- =========================================================
+-- ⌨️ ADVANCED HUMANIZER 2.0 (10% TYPO) & TROLL LOGIC
+-- =========================================================
+local function fireTypingSim(word)
+    if remotes:FindFirstChild("UpdateCurrentWord") then remotes.UpdateCurrentWord:FireServer(word) end
+    if remotes:FindFirstChild("WordUpdate") then remotes.WordUpdate:FireServer(word) end
+    if remotes:FindFirstChild("BillboardUpdate") then remotes.BillboardUpdate:FireServer(word) end
+end
+
+local function fireSubmitFinal(word)
+    if remotes:FindFirstChild("SubmitWord") then remotes.SubmitWord:FireServer(word) end
+    if remotes:FindFirstChild("BillboardEnd") then remotes.BillboardEnd:FireServer() end
+end
+
+function typeAndSubmitWord(word, uiButton)
+    if State.IsTyping or not State.IsMyTurn then return false end
+    State.IsTyping = true; State.HasSubmitted = false; State.TriedThisTurn[word] = true; State.LastSubmittedWord = word; State.ValidationResult = nil 
+
+    local currentTyped = State.ServerLetter
+    local remaining = sub(word, #currentTyped + 1)
+    local baseDelay = Config.TypingDelayMS / 1000
+    local mode = Config.Playstyle
+
+    if mode == "Troll Taunt" then
+        local taunt = TauntMessages[random(1, #TauntMessages)]
+        updateStatusUI("🤡 Mengejek musuh...", Color3.fromRGB(255, 100, 100))
+        for i = 1, #taunt do
+            if not State.IsMyTurn then break end
+            fireTypingSim(sub(taunt, 1, i))
+            if remotes:FindFirstChild("TypeSound") then remotes.TypeSound:FireServer() end
+            task.wait(0.08)
+        end
+        task.wait(1.5) 
+        fireTypingSim("") 
+        task.wait(0.1)
+    elseif mode == "Troll AFK" then
+        updateStatusUI("💤 Pura-pura AFK...", Color3.fromRGB(150, 150, 150))
+        task.wait(random(3000, 4500) / 1000) 
+    else
+        if Config.Humanize and Config.AutoPlay then task.wait(random(150, 350) / 1000) end
+    end
+
+    for i = 1, #remaining do
+        if not State.IsMyTurn then break end
+        local correctChar = sub(remaining, i, i)
+        
+        -- [NEW] Typo Rate 10%
+        if Config.Humanize and Config.TypingDelayMS > 10 and random() < 0.10 and mode ~= "Troll AFK" then
+            local adj = KeyboardAdjacent[correctChar]
+            if adj then
+                local wrongChar = sub(adj, random(1, #adj), random(1, #adj))
+                fireTypingSim(currentTyped .. wrongChar)
+                if remotes:FindFirstChild("TypeSound") then remotes.TypeSound:FireServer() end
+                task.wait(random(80, 120) / 1000) 
+            end
+        end
+
+        currentTyped = currentTyped .. correctChar
+        fireTypingSim(currentTyped)
+        if remotes:FindFirstChild("TypeSound") then remotes.TypeSound:FireServer() end
+        
+        if mode == "Troll AFK" then
+            RunService.Heartbeat:Wait()
+        else
+            local variance = Config.Humanize and (random(85, 115) / 100) or 1
+            if Config.TypingDelayMS <= 10 then RunService.Heartbeat:Wait() else task.wait(baseDelay * variance) end
+        end
+    end
+
+    if State.IsMyTurn then
+        task.wait(0.05)
+        fireSubmitFinal(word)
+        State.HasSubmitted = true
+        
+        -- [FIX] Timeout Validasi (Tidak akan mem-blacklist jika server lag)
+        local timeout = 0
+        while State.ValidationResult == nil and State.IsMyTurn and timeout < 30 do 
+            task.wait(0.1)
+            timeout = timeout + 1 
+        end
+
+        if State.ValidationResult == "INVALID" then
+            queueWrite("blacklist", word); State.PermanentBlacklist[word] = true
+            if uiButton then
+                TweenService:Create(uiButton, TweenInfo.new(0.3), {BackgroundColor3 = Color3.fromRGB(80, 20, 20)}):Play()
+                uiButton.Text = " ❌ " .. word:upper(); uiButton.Interactable = false
+            end
+            State.IsTyping = false; return false 
+        else
+            -- Dianggap sukses jika mendapat SUCCESS atau server lag (timeout)
+            State.UsedWords[word] = true; State.IsTyping = false; return true 
+        end
+    end
+    State.IsTyping = false; return false 
+end
+
+-- =========================================================
+-- 📝 O(1) FAST LOOKUP (REPLACED TRIE)
+-- =========================================================
+local function generateAndPlayTurn(prefix)
+    hideAllButtons()
+    if not prefix or prefix == "" or #Dictionary == 0 then return end
+
+    local lowerPrefix = lower(prefix)
+    local prefixLen = #lowerPrefix
+    
+    -- O(1) Lookup instant menggunakan PrefixMap
+    local searchPool = PrefixMap[lowerPrefix] or {}
+
+    local mode = Config.Playstyle
+    local topWords = {} 
+    local MAX_WORDS = 150
+
+    for _, dictIndex in ipairs(searchPool) do
+        local w = Dictionary[dictIndex]
+        if not State.UsedWords[w] and not State.TriedThisTurn[w] and not State.PermanentBlacklist[w] then
+            local score = getWordScore(w, mode, prefixLen)
+            local insertPos = #topWords + 1
+            for i = 1, #topWords do if score > topWords[i].score then insertPos = i; break end end
+            if insertPos <= MAX_WORDS then
+                table.insert(topWords, insertPos, {word = w, score = score})
+                if #topWords > MAX_WORDS then topWords[MAX_WORDS + 1] = nil end
+            end
+        end
+    end
+
+    local uiButtons = {}
+    for i = 1, #topWords do
+        local p = getPoolButton(i)
+        p.word = topWords[i].word
+        
+        local isIndexed = State.IndexWords[p.word]
+        local prefixMark = (mode == "Complete Index" and not isIndexed) and "⭐ " or " "
+        
+        p.btn.Text = prefixMark .. p.word:upper() .. " (" .. #p.word .. ")"
+        uiButtons[i] = p.btn
+    end
+
+    if Config.AutoPlay and not State.BotExecuting then
+        State.BotExecuting = true
+        task.spawn(function()
+            task.wait(random(50, 150) / 100) 
+            for i = 1, #topWords do
+                if not State.IsMyTurn or not Config.AutoPlay then break end
+                local targetWord = topWords[i].word
+                updateStatusUI("🤖 Mengetik: " .. targetWord:upper(), Color3.fromRGB(100, 180, 255))
+                local success = typeAndSubmitWord(targetWord, uiButtons[i])
+                if success then break end 
+                if State.IsMyTurn and Config.AutoPlay then task.wait(0.2) end
+            end
+            State.BotExecuting = false
+        end)
+    end
+end
+
+-- =========================================================
+-- 📡 ENEMY WORD STEALING (LEARNING AI)
+-- =========================================================
+local function onEnemyWordUpdate(word)
+    if State.MatchActive and word and word ~= "" then 
+        local lw = lower(word)
+        State.UsedWords[lw] = true 
+        if not KnownWords[lw] then addWordToDB(lw, false, true)
+        elseif not State.VerifiedWords[lw] then State.VerifiedWords[lw] = true; queueWrite("verified", lw) end
+    end
+end
+
+if remotes:FindFirstChild("MatchUI") then
+    remotes.MatchUI.OnClientEvent:Connect(function(cmd, value)
+        if cmd == "ShowMatchUI" then
+            State.MatchActive = true; State.IsMyTurn = false; State.UsedWords = {}; State.TriedThisTurn = {}
+            hideAllButtons(); updateStatusUI()
+        elseif cmd == "HideMatchUI" then
+            State.MatchActive = false; State.IsMyTurn = false; State.ServerLetter = ""; State.ValidationResult = "SUCCESS"
+            hideAllButtons(); updateStatusUI("🏁 Match Selesai", Color3.fromRGB(150, 150, 150))
+        elseif cmd == "StartTurn" then
+            State.IsMyTurn = true; State.TriedThisTurn = {}; State.BotExecuting = false; updateStatusUI()
+            generateAndPlayTurn(State.ServerLetter)
+        elseif cmd == "EndTurn" then
+            State.IsMyTurn = false; State.ValidationResult = "SUCCESS"; hideAllButtons(); updateStatusUI()
+        elseif cmd == "UpdateServerLetter" then
+            State.ServerLetter = value or ""; updateStatusUI()
+        end
+    end)
+end
+
+if remotes:FindFirstChild("BillboardUpdate") then remotes.BillboardUpdate.OnClientEvent:Connect(onEnemyWordUpdate) end
+if remotes:FindFirstChild("UpdateCurrentWord") then remotes.UpdateCurrentWord.OnClientEvent:Connect(onEnemyWordUpdate) end
+if remotes:FindFirstChild("WordUpdate") then remotes.WordUpdate.OnClientEvent:Connect(onEnemyWordUpdate) end
+
+print("🚀 AUTO TYPE V19.5 LOADED! [The Apex Edition]")
