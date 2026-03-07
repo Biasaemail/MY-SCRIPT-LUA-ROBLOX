@@ -1,6 +1,7 @@
 axioo
 balt
 gawatt
+kasr
 kilowatt
 megawatt
 mikrowatt
