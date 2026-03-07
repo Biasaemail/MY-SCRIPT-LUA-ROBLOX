@@ -1,5 +1,13 @@
 axioo
 balt
+gawatt
+kilowatt
+megawatt
+mikrowatt
+nett
+ntt
+tt
+watt
 femtovolt
 keloelektrovolt
 kilovolt
