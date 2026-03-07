@@ -7,6 +7,10 @@ mikrowatt
 nett
 ntt
 intert
+idt
+pdt
+schmidt
+sdt
 introvert
 kart
 komfort
