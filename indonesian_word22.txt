@@ -1,6 +1,24 @@
 axioo
 balt
 if
+kiu
+liu
+menginterviu
+mensiu
+mesiu
+piu
+previu
+seliu
+siu
+tisiu
+viu
+baliu
+ciu
+diinterviu
+hiu
+interpiu
+interviu
+iu
 ifah
 ifikasi
 ifrad
@@ -15,7 +33,7 @@ sregep
 srem
 srempet
 sri
-sri langka
+srilangka
 srigading
 srigunggu
 srigunting
