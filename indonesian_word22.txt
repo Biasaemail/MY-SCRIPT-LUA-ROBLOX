@@ -1,6 +1,15 @@
 axioo
 balt
 gawatt
+anaesthesiology
+bioenergy
+craniology
+oceanology
+paleoanthropology
+phytopathology
+seismology
+traumatology
+vulcanology
 kasr
 kilowatt
 megawatt
