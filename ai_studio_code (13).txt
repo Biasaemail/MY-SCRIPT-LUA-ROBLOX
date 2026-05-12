@@ -1,0 +1,434 @@
+--=====================================================================
+--  HYBRID WALKSPEED & UTILITY SYSTEM (v4.1 - CFrame Undetected)
+--  Fitur:
+--    ✔ CFrame Walkspeed (100% Undetected dari Property Checks)
+--    ✔ Stepped Noclip, Anti-AFK, InfJump
+--    ✔ Enhanced Daylight (Toggleable & Clean)
+--    ✔ Infinite Yield (One-Click Execute)
+--    ✔ MODULAR GUI: Sangat mudah ditambah fitur baru
+--    ✔ MINIMIZE: Bisa digulung ke atas (Header Only)
+--=====================================================================
+
+-- PREVENT DOUBLE EXECUTION
+if getgenv().SystemLoaded_v4 then
+    warn("Script already running! Reloading...")
+    if getgenv().CleanupSystem_v4 then getgenv().CleanupSystem_v4() end
+    task.wait(0.5)
+end
+
+local Services = {
+    Players = game:GetService("Players"),
+    RunService = game:GetService("RunService"),
+    UIS = game:GetService("UserInputService"),
+    StarterGui = game:GetService("StarterGui"),
+    VirtualUser = game:GetService("VirtualUser"),
+    TweenService = game:GetService("TweenService"),
+    CoreGui = game:GetService("CoreGui"),
+    Lighting = game:GetService("Lighting")
+}
+
+local player = Services.Players.LocalPlayer
+local camera = workspace.CurrentCamera
+repeat task.wait() until player
+
+--=====================================================================
+--                        CONFIGURATION
+--=====================================================================
+
+getgenv().AppConfig = getgenv().AppConfig or {
+    Speed = 100,
+    Noclip = true,
+    InfJump = true,
+    AntiAFK = true,
+    Daylight = false,
+    DebugMode = false,
+}
+
+local Config = getgenv().AppConfig
+local Connections = {}
+
+local function CleanupConnection(name)
+    if Connections[name] then
+        pcall(function() Connections[name]:Disconnect() end)
+        Connections[name] = nil
+    end
+end
+
+local function CleanupAll()
+    for name, _ in pairs(Connections) do CleanupConnection(name) end
+    local existingGui = Services.CoreGui:FindFirstChild("iOS_Modular_UI")
+    if existingGui then existingGui:Destroy() end
+end
+
+getgenv().CleanupSystem_v4 = CleanupAll
+
+local function Notify(title, msg)
+    pcall(function()
+        Services.StarterGui:SetCore("SendNotification", {Title = title, Text = tostring(msg), Duration = 2.5})
+    end)
+end
+
+--=====================================================================
+--        UNDETECTED WALKSPEED SYSTEM (CFRAME METHOD v4.1)
+--=====================================================================
+-- Metode ini tidak menyentuh properti WalkSpeed di Humanoid.
+-- Anti-cheat tidak akan mendeteksi perubahan WalkSpeed karena
+-- kita memanipulasi posisi secara manual berdasarkan arah gerakan.
+
+local SpeedSystem = {}
+
+function SpeedSystem.Start()
+    CleanupConnection("cframeSpeed")
+    Connections.cframeSpeed = Services.RunService.Heartbeat:Connect(function(deltaTime)
+        local char = player.Character
+        if not char then return end
+        
+        local hum = char:FindFirstChild("Humanoid")
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+
+        -- Pastikan karakter hidup dan sedang bergerak (MoveDirection > 0)
+        if hum and hrp and hum.Health > 0 and hum.MoveDirection.Magnitude > 0 then
+            local targetSpeed = Config.Speed
+            local baseSpeed = hum.WalkSpeed -- Biasanya 16 (Kecepatan asli game)
+
+            -- Hanya tambahkan kecepatan jika targetSpeed lebih besar dari kecepatan dasar
+            if targetSpeed > baseSpeed then
+                local extraSpeed = targetSpeed - baseSpeed
+                -- Dorong posisi karakter ke arah geraknya (MoveDirection)
+                hrp.CFrame = hrp.CFrame + (hum.MoveDirection * (extraSpeed * deltaTime))
+            end
+        end
+    end)
+end
+
+function SpeedSystem.UpdateSpeed(newSpeed)
+    Config.Speed = newSpeed
+end
+
+--=====================================================================
+--           UTILITIES (Noclip, Anti-AFK, InfJump)
+--=====================================================================
+
+local function StartNoclip()
+    CleanupConnection("steppedNoclip")
+    Connections.steppedNoclip = Services.RunService.Stepped:Connect(function()
+        if not Config.Noclip then return end
+        local char = player.Character
+        if not char then return end
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") and part.CanCollide == true then part.CanCollide = false end
+        end
+    end)
+end
+
+local function SetupAntiAFK()
+    CleanupConnection("antiAFK")
+    local lastAction = 0
+    Connections.antiAFK = player.Idled:Connect(function()
+        if not Config.AntiAFK then return end
+        if tick() - lastAction < 3 then return end
+        lastAction = tick()
+        Services.VirtualUser:CaptureController()
+        Services.VirtualUser:ClickButton2(Vector2.new())
+    end)
+end
+
+local function SetupInfJump()
+    CleanupConnection("infJump")
+    Connections.infJump = Services.UIS.JumpRequest:Connect(function()
+        if Config.InfJump and player.Character then
+            local hum = player.Character:FindFirstChild("Humanoid")
+            if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+        end
+    end)
+end
+
+--=====================================================================
+--                 DAYLIGHT SYSTEM (TOGGLEABLE)
+--=====================================================================
+
+local DaylightSystem = {}
+local TARGET_SETTINGS = {
+    ClockTime = 14, Brightness = 2.0, Ambient = Color3.fromRGB(128, 128, 128),
+    OutdoorAmbient = Color3.fromRGB(128, 128, 128), FogEnd = 1000000, FogStart = 999000,
+    GlobalShadows = false, ShadowSoftness = 0
+}
+local EFFECTS_TO_DISABLE = {"ColorCorrectionEffect", "BloomEffect", "BlurEffect", "SunRaysEffect", "DepthOfFieldEffect", "Atmosphere", "ChromaticAberrationEffect", "ColorAdjustEffect", "VignetteEffect"}
+
+function DaylightSystem.Enforce()
+    if not Config.Daylight then return end
+    for prop, val in pairs(TARGET_SETTINGS) do
+        if Services.Lighting[prop] ~= val then Services.Lighting[prop] = val end
+    end
+    
+    local function disableEffects(parent)
+        if not parent then return end
+        for _, effectName in ipairs(EFFECTS_TO_DISABLE) do
+            for _, effect in ipairs(parent:GetChildren()) do
+                if effect:IsA(effectName) and effect:IsA("PostEffect") or effect:IsA("Atmosphere") then
+                    if effect:IsA("Atmosphere") then
+                        effect.Density = 0; effect.Haze = 0; effect.Glare = 0
+                    else
+                        effect.Enabled = false
+                    end
+                end
+            end
+        end
+    end
+    disableEffects(Services.Lighting)
+    disableEffects(camera)
+end
+
+function DaylightSystem.Toggle(state)
+    Config.Daylight = state
+    CleanupConnection("daylightLoop")
+    if state then
+        DaylightSystem.Enforce()
+        Connections.daylightLoop = Services.RunService.RenderStepped:Connect(DaylightSystem.Enforce)
+    end
+end
+
+--=====================================================================
+--             MODULAR iOS GUI BUILDER (EASY TO UPDATE)
+--=====================================================================
+
+local UIBuilder = {}
+
+function UIBuilder.Init()
+    local oldGui = Services.CoreGui:FindFirstChild("iOS_Modular_UI")
+    if oldGui then oldGui:Destroy() end
+
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "iOS_Modular_UI"
+    ScreenGui.ResetOnSpawn = false
+    ScreenGui.Parent = (gethui and gethui()) or Services.CoreGui
+
+    -- Main Frame
+    local MainFrame = Instance.new("Frame")
+    MainFrame.Name = "MainFrame"
+    MainFrame.Size = UDim2.new(0, 190, 0, 260) -- Tinggi default
+    MainFrame.Position = UDim2.new(0.5, -95, 0.5, -130)
+    MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 22)
+    MainFrame.BackgroundTransparency = 0.35
+    MainFrame.BorderSizePixel = 0
+    MainFrame.ClipsDescendants = true -- Penting untuk animasi minimize
+    MainFrame.Parent = ScreenGui
+
+    Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 14)
+    local stroke = Instance.new("UIStroke", MainFrame)
+    stroke.Color = Color3.fromRGB(255, 255, 255)
+    stroke.Transparency = 0.85; stroke.Thickness = 1
+
+    -- Header (Draggable Area & Minimize Button)
+    local Header = Instance.new("Frame")
+    Header.Size = UDim2.new(1, 0, 0, 35)
+    Header.BackgroundTransparency = 1
+    Header.Parent = MainFrame
+
+    local Title = Instance.new("TextLabel")
+    Title.Size = UDim2.new(1, -40, 1, 0)
+    Title.Position = UDim2.new(0, 15, 0, 0)
+    Title.BackgroundTransparency = 1
+    Title.Text = "Settings"
+    Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+    Title.Font = Enum.Font.GothamBold
+    Title.TextSize = 15
+    Title.TextXAlignment = Enum.TextXAlignment.Left
+    Title.Parent = Header
+
+    local MinBtn = Instance.new("TextButton")
+    MinBtn.Size = UDim2.new(0, 35, 0, 35)
+    MinBtn.Position = UDim2.new(1, -35, 0, 0)
+    MinBtn.BackgroundTransparency = 1
+    MinBtn.Text = "−"
+    MinBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    MinBtn.Font = Enum.Font.GothamBold
+    MinBtn.TextSize = 18
+    MinBtn.Parent = Header
+
+    local Divider = Instance.new("Frame")
+    Divider.Size = UDim2.new(1, 0, 0, 1)
+    Divider.Position = UDim2.new(0, 0, 1, -1)
+    Divider.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    Divider.BackgroundTransparency = 0.85
+    Divider.BorderSizePixel = 0
+    Divider.Parent = Header
+
+    -- Scrolling Content (Tempat menu berada)
+    local Content = Instance.new("ScrollingFrame")
+    Content.Size = UDim2.new(1, 0, 1, -35)
+    Content.Position = UDim2.new(0, 0, 0, 35)
+    Content.BackgroundTransparency = 1
+    Content.BorderSizePixel = 0
+    Content.ScrollBarThickness = 2
+    Content.CanvasSize = UDim2.new(0, 0, 0, 0)
+    Content.Parent = MainFrame
+
+    local Layout = Instance.new("UIListLayout")
+    Layout.SortOrder = Enum.SortOrder.LayoutOrder
+    Layout.Padding = UDim.new(0, 8)
+    Layout.Parent = Content
+
+    local Padding = Instance.new("UIPadding")
+    Padding.PaddingTop = UDim.new(0, 10)
+    Padding.PaddingBottom = UDim.new(0, 10)
+    Padding.PaddingLeft = UDim.new(0, 15)
+    Padding.PaddingRight = UDim.new(0, 15)
+    Padding.Parent = Content
+
+    -- Auto Resize Canvas
+    Layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        Content.CanvasSize = UDim2.new(0, 0, 0, Layout.AbsoluteContentSize.Y + 20)
+    end)
+
+    -- Minimize Logic
+    local minimized = false
+    MinBtn.MouseButton1Click:Connect(function()
+        minimized = not minimized
+        MinBtn.Text = minimized and "+" or "−"
+        local targetSize = minimized and UDim2.new(0, 190, 0, 35) or UDim2.new(0, 190, 0, 260)
+        Services.TweenService:Create(MainFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Size = targetSize}):Play()
+    end)
+
+    -- Smooth Dragging
+    local dragging, dragInput, dragStart, startPos
+    Header.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true; dragStart = input.Position; startPos = MainFrame.Position
+        end
+    end)
+    Header.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then dragInput = input end
+    end)
+    Services.UIS.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            local delta = input.Position - dragStart
+            Services.TweenService:Create(MainFrame, TweenInfo.new(0.08, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), {
+                Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+            }):Play()
+        end
+    end)
+    Services.UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then dragging = false end
+    end)
+
+    UIBuilder.ContentFrame = Content
+    UIBuilder.LayoutOrderCount = 0
+end
+
+function UIBuilder.AddToggle(text, defaultState, callback)
+    UIBuilder.LayoutOrderCount = UIBuilder.LayoutOrderCount + 1
+    local Container = Instance.new("Frame", UIBuilder.ContentFrame)
+    Container.Size = UDim2.new(1, 0, 0, 26); Container.BackgroundTransparency = 1; Container.LayoutOrder = UIBuilder.LayoutOrderCount
+
+    local Label = Instance.new("TextLabel", Container)
+    Label.Size = UDim2.new(0.6, 0, 1, 0); Label.BackgroundTransparency = 1
+    Label.Text = text; Label.TextColor3 = Color3.fromRGB(230, 230, 230)
+    Label.Font = Enum.Font.GothamMedium; Label.TextSize = 13; Label.TextXAlignment = Enum.TextXAlignment.Left
+
+    local ToggleBG = Instance.new("TextButton", Container)
+    ToggleBG.Size = UDim2.new(0, 40, 0, 22); ToggleBG.Position = UDim2.new(1, -40, 0.5, -11)
+    ToggleBG.BackgroundColor3 = defaultState and Color3.fromRGB(52, 199, 89) or Color3.fromRGB(70, 70, 75)
+    ToggleBG.Text = ""; ToggleBG.AutoButtonColor = false
+    Instance.new("UICorner", ToggleBG).CornerRadius = UDim.new(1, 0)
+
+    local Knob = Instance.new("Frame", ToggleBG)
+    Knob.Size = UDim2.new(0, 18, 0, 18); Knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    Knob.Position = defaultState and UDim2.new(1, -20, 0.5, -9) or UDim2.new(0, 2, 0.5, -9)
+    Instance.new("UICorner", Knob).CornerRadius = UDim.new(1, 0)
+
+    local state = defaultState
+    ToggleBG.MouseButton1Click:Connect(function()
+        state = not state
+        callback(state)
+        local tweenInfo = TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+        Services.TweenService:Create(ToggleBG, tweenInfo, {BackgroundColor3 = state and Color3.fromRGB(52, 199, 89) or Color3.fromRGB(70, 70, 75)}):Play()
+        Services.TweenService:Create(Knob, tweenInfo, {Position = state and UDim2.new(1, -20, 0.5, -9) or UDim2.new(0, 2, 0.5, -9)}):Play()
+    end)
+end
+
+function UIBuilder.AddInput(text, defaultValue, callback)
+    UIBuilder.LayoutOrderCount = UIBuilder.LayoutOrderCount + 1
+    local Container = Instance.new("Frame", UIBuilder.ContentFrame)
+    Container.Size = UDim2.new(1, 0, 0, 26); Container.BackgroundTransparency = 1; Container.LayoutOrder = UIBuilder.LayoutOrderCount
+
+    local Label = Instance.new("TextLabel", Container)
+    Label.Size = UDim2.new(0.5, 0, 1, 0); Label.BackgroundTransparency = 1
+    Label.Text = text; Label.TextColor3 = Color3.fromRGB(230, 230, 230)
+    Label.Font = Enum.Font.GothamMedium; Label.TextSize = 13; Label.TextXAlignment = Enum.TextXAlignment.Left
+
+    local TextBox = Instance.new("TextBox", Container)
+    TextBox.Size = UDim2.new(0, 45, 0, 22); TextBox.Position = UDim2.new(1, -45, 0.5, -11)
+    TextBox.BackgroundColor3 = Color3.fromRGB(40, 40, 45); TextBox.BackgroundTransparency = 0.5
+    TextBox.Text = tostring(defaultValue); TextBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+    TextBox.Font = Enum.Font.GothamMedium; TextBox.TextSize = 12
+    Instance.new("UICorner", TextBox).CornerRadius = UDim.new(0, 6)
+
+    TextBox.FocusLost:Connect(function()
+        local val = tonumber(TextBox.Text)
+        if val then callback(val) else TextBox.Text = tostring(defaultValue) end
+    end)
+end
+
+function UIBuilder.AddButton(text, callback)
+    UIBuilder.LayoutOrderCount = UIBuilder.LayoutOrderCount + 1
+    local Container = Instance.new("Frame", UIBuilder.ContentFrame)
+    Container.Size = UDim2.new(1, 0, 0, 30); Container.BackgroundTransparency = 1; Container.LayoutOrder = UIBuilder.LayoutOrderCount
+
+    local Btn = Instance.new("TextButton", Container)
+    Btn.Size = UDim2.new(1, 0, 1, 0)
+    Btn.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+    Btn.BackgroundTransparency = 0.5
+    Btn.Text = text
+    Btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    Btn.Font = Enum.Font.GothamMedium
+    Btn.TextSize = 13
+    Btn.AutoButtonColor = true
+    Instance.new("UICorner", Btn).CornerRadius = UDim.new(0, 6)
+
+    Btn.MouseButton1Click:Connect(callback)
+end
+
+--=====================================================================
+--                 INITIALIZATION & MENU SETUP
+--=====================================================================
+
+-- Start Background Systems
+SpeedSystem.Start()
+StartNoclip()
+SetupAntiAFK()
+SetupInfJump()
+if Config.Daylight then DaylightSystem.Toggle(true) end
+
+-- BUILD GUI
+UIBuilder.Init()
+
+-- 1. Input Box untuk Walkspeed
+UIBuilder.AddInput("Speed", Config.Speed, function(val)
+    SpeedSystem.UpdateSpeed(val)
+end)
+
+-- 2. Toggle Noclip
+UIBuilder.AddToggle("Noclip", Config.Noclip, function(state)
+    Config.Noclip = state
+end)
+
+-- 3. Toggle Inf Jump
+UIBuilder.AddToggle("Inf Jump", Config.InfJump, function(state)
+    Config.InfJump = state
+end)
+
+-- 4. Toggle Daylight
+UIBuilder.AddToggle("Daylight", Config.Daylight, function(state)
+    DaylightSystem.Toggle(state)
+end)
+
+-- 5. Button Infinite Yield
+UIBuilder.AddButton("Execute Inf. Yield", function()
+    loadstring(game:HttpGet("https://rawscripts.net/raw/Universal-Script-Infinite-yeild-fe-14386"))()
+    Notify("Infinite Yield", "Executed Successfully!")
+end)
+
+getgenv().SystemLoaded_v4 = true
+Notify("System v4.1", "CFrame Speed Undetected Aktif!")
+print("=== OPTIMIZED SYSTEM v4.1 ACTIVE ===")
