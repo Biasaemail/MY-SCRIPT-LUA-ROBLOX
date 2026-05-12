@@ -1,0 +1,486 @@
+--=====================================================================
+--  HYBRID WALKSPEED SYSTEM (v3.2 Core + Stepped Noclip + iOS GUI)
+--  Fitur:
+--    ✔ Walkspeed v3.1: Safe MetaHook, SmartCheck Fix, Anti-conflict
+--    ✔ Noclip (Stepped): Loop klasik tapi dioptimalkan (Conditional Write)
+--    ✔ Anti-AFK & InfJump: Clean event-based logic
+--    ✔ GUI: iOS Glassmorphism, Draggable, Lightweight, Smooth Tweens
+--=====================================================================
+
+-- PREVENT DOUBLE EXECUTION
+if getgenv().WalkspeedSystemLoaded then
+    warn("Script already running! Reloading...")
+    if getgenv().CleanupWalkspeedSystem then
+        getgenv().CleanupWalkspeedSystem()
+    end
+    task.wait(0.5)
+end
+
+local Services = {
+    Players = game:GetService("Players"),
+    RunService = game:GetService("RunService"),
+    UIS = game:GetService("UserInputService"),
+    StarterGui = game:GetService("StarterGui"),
+    VirtualUser = game:GetService("VirtualUser"),
+    TweenService = game:GetService("TweenService"),
+    CoreGui = game:GetService("CoreGui")
+}
+
+local player = Services.Players.LocalPlayer
+repeat task.wait() until player
+
+--=====================================================================
+--                        CONFIGURATION
+--=====================================================================
+
+getgenv().SpeedConfig = getgenv().SpeedConfig or {
+    Speed = 100,
+    UseMetaHook = false,
+    Noclip = true,      -- Default ON sesuai permintaan
+    InfJump = true,
+    AntiAFK = true,
+    DebugMode = false,
+}
+
+local Config = getgenv().SpeedConfig
+
+--=====================================================================
+--                      CONNECTION MANAGER
+--=====================================================================
+
+local Connections = {}
+local SmartCheckRunning = false
+
+local function CleanupConnection(name)
+    if Connections[name] then
+        pcall(function() Connections[name]:Disconnect() end)
+        Connections[name] = nil
+    end
+end
+
+local function CleanupAll()
+    for name, _ in pairs(Connections) do
+        CleanupConnection(name)
+    end
+    SmartCheckRunning = false
+    
+    -- Cleanup GUI
+    local existingGui = Services.CoreGui:FindFirstChild("iOS_Glass_UI")
+    if existingGui then existingGui:Destroy() end
+end
+
+getgenv().CleanupWalkspeedSystem = CleanupAll
+
+--=====================================================================
+--                         UTILITIES
+--=====================================================================
+
+local function Notify(title, msg)
+    pcall(function()
+        Services.StarterGui:SetCore("SendNotification", {
+            Title = title, Text = tostring(msg), Duration = 2.5
+        })
+    end)
+end
+
+local function DebugLog(...)
+    if Config.DebugMode then print("[WS-DEBUG]", ...) end
+end
+
+--=====================================================================
+--                 WALKSPEED SYSTEM (CORE v3.1)
+--=====================================================================
+
+local SpeedSystem = {}
+
+function SpeedSystem.GetHumanoid()
+    local char = player.Character
+    if not char then return nil end
+    return char:FindFirstChild("Humanoid")
+end
+
+function SpeedSystem.SetSpeed(hum, value)
+    if not hum then return end
+    hum.AutoJumpEnabled = false
+    pcall(function() hum.WalkSpeed = value end)
+end
+
+function SpeedSystem.PrepareMetaHook()
+    if getgenv().MetaHookInstalled then return true end
+
+    local success, err = pcall(function()
+        local mt = getrawmetatable(game)
+        setreadonly(mt, false)
+
+        if not getgenv()._OriginalNewIndex then
+            getgenv()._OriginalNewIndex = mt.__newindex
+        end
+        
+        local originalFunc = getgenv()._OriginalNewIndex
+
+        mt.__newindex = newcclosure(function(self, idx, val)
+            if idx == "WalkSpeed" and not checkcaller() then
+                if Config.UseMetaHook then
+                    return originalFunc(self, idx, Config.Speed)
+                end
+            end
+            return originalFunc(self, idx, val)
+        end)
+
+        setreadonly(mt, true)
+        getgenv().MetaHookInstalled = true
+        DebugLog("MetaHook Installed")
+    end)
+    return success
+end
+
+function SpeedSystem.SetupLogic1(char)
+    if not char then return end
+    local hum = char:WaitForChild("Humanoid", 10)
+    if not hum then return end
+
+    CleanupConnection("speedLock")
+    Connections.speedLock = hum:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
+        if Config.UseMetaHook then return end
+        
+        if math.abs(hum.WalkSpeed - Config.Speed) > 1 then
+            SpeedSystem.SetSpeed(hum, Config.Speed)
+        end
+    end)
+end
+
+function SpeedSystem.SmartCheck()
+    if SmartCheckRunning then return end
+    SmartCheckRunning = true
+    
+    task.spawn(function()
+        local char = player.Character
+        task.wait(1.5)
+        
+        if not player.Character or player.Character ~= char then
+            SmartCheckRunning = false
+            return
+        end
+
+        local hum = char:FindFirstChild("Humanoid")
+        if not hum then 
+            SmartCheckRunning = false
+            return 
+        end
+
+        SpeedSystem.PrepareMetaHook()
+        SpeedSystem.SetSpeed(hum, Config.Speed)
+        task.wait(0.5)
+        
+        local diff = math.abs(hum.WalkSpeed - Config.Speed)
+        
+        if diff <= 1 then
+            Config.UseMetaHook = false
+            DebugLog("Mode: Simple Lock")
+        else
+            Config.UseMetaHook = true
+            DebugLog("Mode: MetaHook Active")
+            SpeedSystem.SetSpeed(hum, Config.Speed)
+        end
+        
+        SmartCheckRunning = false
+    end)
+end
+
+function SpeedSystem.UpdateSpeed(newSpeed)
+    Config.Speed = newSpeed
+    local hum = SpeedSystem.GetHumanoid()
+    if hum then SpeedSystem.SetSpeed(hum, newSpeed) end
+end
+
+--=====================================================================
+--           EFFICIENT STEPPED NOCLIP
+--=====================================================================
+
+local NoclipSystem = {}
+
+function NoclipSystem.StartLoop()
+    CleanupConnection("steppedNoclip")
+
+    Connections.steppedNoclip = Services.RunService.Stepped:Connect(function()
+        if not Config.Noclip then return end
+        local char = player.Character
+        if not char then return end
+
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") and part.CanCollide == true then
+                part.CanCollide = false
+            end
+        end
+    end)
+end
+
+--=====================================================================
+--                  UTILITIES (InfJump & Anti-AFK)
+--=====================================================================
+
+local function SetupAntiAFK()
+    CleanupConnection("antiAFK")
+    local lastAction = 0
+    
+    Connections.antiAFK = player.Idled:Connect(function()
+        if not Config.AntiAFK then return end
+        if tick() - lastAction < 3 then return end
+        lastAction = tick()
+        
+        Services.VirtualUser:CaptureController()
+        Services.VirtualUser:ClickButton2(Vector2.new())
+    end)
+end
+
+local function SetupInfJump()
+    CleanupConnection("infJump")
+    Connections.infJump = Services.UIS.JumpRequest:Connect(function()
+        if Config.InfJump and player.Character then
+            local hum = player.Character:FindFirstChild("Humanoid")
+            if hum then
+                hum:ChangeState(Enum.HumanoidStateType.Jumping)
+            end
+        end
+    end)
+end
+
+--=====================================================================
+--             iOS GLASS UI SYSTEM (MINIMALIST & DRAGGABLE)
+--=====================================================================
+
+local function CreateGUI()
+    -- Hapus GUI lama jika ada
+    local oldGui = Services.CoreGui:FindFirstChild("iOS_Glass_UI")
+    if oldGui then oldGui:Destroy() end
+
+    -- Main ScreenGui
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "iOS_Glass_UI"
+    ScreenGui.ResetOnSpawn = false
+    ScreenGui.Parent = (gethui and gethui()) or Services.CoreGui
+
+    -- Main Frame (Glassmorphism)
+    local MainFrame = Instance.new("Frame")
+    MainFrame.Name = "MainFrame"
+    MainFrame.Size = UDim2.new(0, 170, 0, 190)
+    MainFrame.Position = UDim2.new(0.5, -85, 0.5, -95)
+    MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 22)
+    MainFrame.BackgroundTransparency = 0.35 -- Efek kaca transparan
+    MainFrame.BorderSizePixel = 0
+    MainFrame.Parent = ScreenGui
+
+    local UICorner = Instance.new("UICorner")
+    UICorner.CornerRadius = UDim.new(0, 14)
+    UICorner.Parent = MainFrame
+
+    local UIStroke = Instance.new("UIStroke")
+    UIStroke.Color = Color3.fromRGB(255, 255, 255)
+    UIStroke.Transparency = 0.85
+    UIStroke.Thickness = 1
+    UIStroke.Parent = MainFrame
+
+    -- Layout & Padding
+    local UIPadding = Instance.new("UIPadding")
+    UIPadding.PaddingTop = UDim.new(0, 12)
+    UIPadding.PaddingBottom = UDim.new(0, 12)
+    UIPadding.PaddingLeft = UDim.new(0, 12)
+    UIPadding.PaddingRight = UDim.new(0, 12)
+    UIPadding.Parent = MainFrame
+
+    local UIListLayout = Instance.new("UIListLayout")
+    UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    UIListLayout.Padding = UDim.new(0, 10)
+    UIListLayout.Parent = MainFrame
+
+    -- Title
+    local Title = Instance.new("TextLabel")
+    Title.Size = UDim2.new(1, 0, 0, 20)
+    Title.BackgroundTransparency = 1
+    Title.Text = "Settings"
+    Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+    Title.Font = Enum.Font.GothamBold
+    Title.TextSize = 16
+    Title.TextXAlignment = Enum.TextXAlignment.Left
+    Title.LayoutOrder = 1
+    Title.Parent = MainFrame
+
+    -- Divider
+    local Divider = Instance.new("Frame")
+    Divider.Size = UDim2.new(1, 0, 0, 1)
+    Divider.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    Divider.BackgroundTransparency = 0.85
+    Divider.BorderSizePixel = 0
+    Divider.LayoutOrder = 2
+    Divider.Parent = MainFrame
+
+    -- Function to create iOS Toggle
+    local function CreateToggle(name, text, defaultState, layoutOrder, callback)
+        local Container = Instance.new("Frame")
+        Container.Size = UDim2.new(1, 0, 0, 26)
+        Container.BackgroundTransparency = 1
+        Container.LayoutOrder = layoutOrder
+        Container.Parent = MainFrame
+
+        local Label = Instance.new("TextLabel")
+        Label.Size = UDim2.new(0.6, 0, 1, 0)
+        Label.BackgroundTransparency = 1
+        Label.Text = text
+        Label.TextColor3 = Color3.fromRGB(230, 230, 230)
+        Label.Font = Enum.Font.GothamMedium
+        Label.TextSize = 13
+        Label.TextXAlignment = Enum.TextXAlignment.Left
+        Label.Parent = Container
+
+        local ToggleBG = Instance.new("TextButton")
+        ToggleBG.Size = UDim2.new(0, 40, 0, 22)
+        ToggleBG.Position = UDim2.new(1, -40, 0.5, -11)
+        ToggleBG.BackgroundColor3 = defaultState and Color3.fromRGB(52, 199, 89) or Color3.fromRGB(70, 70, 75)
+        ToggleBG.Text = ""
+        ToggleBG.AutoButtonColor = false
+        ToggleBG.Parent = Container
+
+        local ToggleCorner = Instance.new("UICorner")
+        ToggleCorner.CornerRadius = UDim.new(1, 0)
+        ToggleCorner.Parent = ToggleBG
+
+        local Knob = Instance.new("Frame")
+        Knob.Size = UDim2.new(0, 18, 0, 18)
+        Knob.Position = defaultState and UDim2.new(1, -20, 0.5, -9) or UDim2.new(0, 2, 0.5, -9)
+        Knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+        Knob.Parent = ToggleBG
+
+        local KnobCorner = Instance.new("UICorner")
+        KnobCorner.CornerRadius = UDim.new(1, 0)
+        KnobCorner.Parent = Knob
+
+        -- Toggle Logic & Animation
+        local state = defaultState
+        ToggleBG.MouseButton1Click:Connect(function()
+            state = not state
+            callback(state)
+
+            -- Smooth iOS Tween
+            local goalBG = {BackgroundColor3 = state and Color3.fromRGB(52, 199, 89) or Color3.fromRGB(70, 70, 75)}
+            local goalKnob = {Position = state and UDim2.new(1, -20, 0.5, -9) or UDim2.new(0, 2, 0.5, -9)}
+            
+            local tweenInfo = TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+            Services.TweenService:Create(ToggleBG, tweenInfo, goalBG):Play()
+            Services.TweenService:Create(Knob, tweenInfo, goalKnob):Play()
+        end)
+    end
+
+    -- Function to create Speed Input
+    local function CreateInput(name, text, defaultValue, layoutOrder)
+        local Container = Instance.new("Frame")
+        Container.Size = UDim2.new(1, 0, 0, 26)
+        Container.BackgroundTransparency = 1
+        Container.LayoutOrder = layoutOrder
+        Container.Parent = MainFrame
+
+        local Label = Instance.new("TextLabel")
+        Label.Size = UDim2.new(0.5, 0, 1, 0)
+        Label.BackgroundTransparency = 1
+        Label.Text = text
+        Label.TextColor3 = Color3.fromRGB(230, 230, 230)
+        Label.Font = Enum.Font.GothamMedium
+        Label.TextSize = 13
+        Label.TextXAlignment = Enum.TextXAlignment.Left
+        Label.Parent = Container
+
+        local TextBox = Instance.new("TextBox")
+        TextBox.Size = UDim2.new(0, 45, 0, 22)
+        TextBox.Position = UDim2.new(1, -45, 0.5, -11)
+        TextBox.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+        TextBox.BackgroundTransparency = 0.5
+        TextBox.Text = tostring(defaultValue)
+        TextBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+        TextBox.Font = Enum.Font.GothamMedium
+        TextBox.TextSize = 12
+        TextBox.Parent = Container
+
+        local BoxCorner = Instance.new("UICorner")
+        BoxCorner.CornerRadius = UDim.new(0, 6)
+        BoxCorner.Parent = TextBox
+
+        TextBox.FocusLost:Connect(function()
+            local val = tonumber(TextBox.Text)
+            if val then
+                SpeedSystem.UpdateSpeed(val)
+            else
+                TextBox.Text = tostring(Config.Speed) -- Revert jika bukan angka
+            end
+        end)
+    end
+
+    -- Create Elements
+    CreateInput("Speed", "Walkspeed", Config.Speed, 3)
+    
+    CreateToggle("Noclip", "Noclip", Config.Noclip, 4, function(state)
+        Config.Noclip = state
+    end)
+    
+    CreateToggle("InfJump", "Inf Jump", Config.InfJump, 5, function(state)
+        Config.InfJump = state
+    end)
+
+    -- Smooth Dragging Logic
+    local dragging, dragInput, dragStart, startPos
+    MainFrame.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = MainFrame.Position
+        end
+    end)
+
+    MainFrame.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+
+    Services.UIS.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            local delta = input.Position - dragStart
+            -- Smooth drag with TweenService
+            local tween = Services.TweenService:Create(MainFrame, TweenInfo.new(0.08, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), {
+                Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+            })
+            tween:Play()
+        end
+    end)
+
+    Services.UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+end
+
+--=====================================================================
+--                         INITIALIZE
+--=====================================================================
+
+player.CharacterAdded:Connect(function(char)
+    SmartCheckRunning = false
+    task.wait(0.5)
+    SpeedSystem.SetupLogic1(char)
+    SpeedSystem.SmartCheck()
+end)
+
+if player.Character then
+    SmartCheckRunning = false
+    SpeedSystem.SetupLogic1(player.Character)
+    SpeedSystem.SmartCheck()
+end
+
+-- Start Systems & GUI
+NoclipSystem.StartLoop()
+SetupAntiAFK()
+SetupInfJump()
+CreateGUI()
+
+getgenv().WalkspeedSystemLoaded = true
+Notify("System v3.2", "Active (Hybrid + GUI)")
+print("=== OPTIMIZED WALKSPEED SYSTEM + iOS GUI ACTIVE ===")
