@@ -1,0 +1,2085 @@
+--[[
+╔═══════════════════════════════════════════════════════════════╗
+║       Cryziie's Arsenal Script — Ultra v5.0                   ║
+║                                                               ║
+║  ULTRA AIMBOT v5.0:                                           ║
+║  • Kalman-Inspired Adaptive Prediction Engine                 ║
+║  • Strafe Pattern Detection (anti-AD-spam wiggle)             ║
+║  • Jump Arc Prediction (parabolic mid-air tracking)           ║
+║  • Spring-Damper Smooth Aim (fully customizable)              ║
+║  • Assist Mode — User Override with AimStrength               ║
+║  • Hold-to-Aim Keybind (RMB Hold / Toggle / Always On)        ║
+║  • 4 Target Priority Modes (Crosshair/HP/Distance/Threat)     ║
+║  • Auto-Switch on Kill (instant next target)                  ║
+║  • Humanization Layer (Perlin Noise micro-offsets)             ║
+║  • Dynamic FOV (scope-aware, auto-expand on idle)             ║
+║  • Sticky Visibility Strength (customizable wall-track)       ║
+║  • Target Info HUD (name, HP, dist, visibility)               ║
+║  • Smart FFA / Team auto-detection (per-frame)                ║
+║  • Multi-point wall check (configurable body parts)           ║
+║  • Full Advanced Settings Tab (prediction, smoothing, limits) ║
+║  • Save & Load Profiles via Rayfield ConfigurationSaving      ║
+║                                                               ║
+║  SMART ESP:                                                   ║
+║  • 6 individual toggles (Highlight, Name, Dist, Tracer, etc.) ║
+║  • Skeleton ESP (R6 + R15 auto-detect)                        ║
+║  • Respawn-smart tracking (CharacterAdded hooks)              ║
+║  • Periodic cache refresh                                     ║
+║  • Smart team coloring (FFA Orange, Team Red/Blue)            ║
+║                                                               ║
+║  MOVEMENT:                                                    ║
+║  • Infinite Jump / NoClip / Speed / Jump Power                ║
+╚═══════════════════════════════════════════════════════════════╝
+]]
+
+-- ══════════════════════════════════════════════════════════════
+--  SECTION 1: RAYFIELD UI SETUP
+--  ConfigurationSaving enabled — all flags auto-persist
+-- ══════════════════════════════════════════════════════════════
+
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+
+local Window = Rayfield:CreateWindow({
+    Name = "Cryziie's Arsenal Ultra v5.0",
+    Icon = 0,
+    LoadingTitle = "Loading Ultra Arsenal Suite v5.0...",
+    LoadingSubtitle = "Presented by: Cryziie | Ultra Edition",
+    ShowText = "taking suggestions dm @Cryziie on discord",
+    Theme = "Default",
+    ToggleUIKeybind = "K",
+    DisableRayfieldPrompts = false,
+    DisableBuildWarnings = false,
+    ConfigurationSaving = {
+        Enabled = true,
+        FolderName = "CryziieUltra",
+        FileName = "CryziieUltra_v5"
+    },
+    Discord = {
+        Enabled = false,
+        Invite = "noinvitelink",
+        RememberJoins = true
+    },
+    KeySystem = false
+})
+
+-- ══════════════════════════════════════════════════════════════
+--  SECTION 2: SERVICES & CORE VARIABLES
+-- ══════════════════════════════════════════════════════════════
+
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace        = game:GetService("Workspace")
+local TeamsService     = game:GetService("Teams")
+
+local LocalPlayer = Players.LocalPlayer
+local Camera      = Workspace.CurrentCamera
+
+-- ══════════════════════════════════════════════════════════════
+--  SECTION 3: CONNECTION MANAGER (pooled)
+-- ══════════════════════════════════════════════════════════════
+
+local Connections = {}
+
+local function TrackConnection(key, conn)
+    if Connections[key] then
+        pcall(function() Connections[key]:Disconnect() end)
+    end
+    Connections[key] = conn
+end
+
+local function KillConnection(key)
+    if Connections[key] then
+        pcall(function() Connections[key]:Disconnect() end)
+        Connections[key] = nil
+    end
+end
+
+local function KillAllConnections()
+    for _, conn in pairs(Connections) do
+        pcall(function() conn:Disconnect() end)
+    end
+    table.clear(Connections)
+end
+
+-- ══════════════════════════════════════════════════════════════
+--  SECTION 4: DRAWING MANAGER (pooled)
+-- ══════════════════════════════════════════════════════════════
+
+local DrawingObjects = {}
+
+local function SafeCreateDrawing(drawType, props)
+    local ok, obj = pcall(Drawing.new, drawType)
+    if not ok or not obj then return nil end
+    for k, v in pairs(props or {}) do
+        pcall(function() obj[k] = v end)
+    end
+    table.insert(DrawingObjects, obj)
+    return obj
+end
+
+local function DestroyAllDrawings()
+    for _, obj in ipairs(DrawingObjects) do
+        pcall(function() obj:Remove() end)
+    end
+    table.clear(DrawingObjects)
+end
+
+-- ══════════════════════════════════════════════════════════════
+--  SECTION 5: UTILITY FUNCTIONS
+-- ══════════════════════════════════════════════════════════════
+
+-- Cache for IsAlive — avoids repeated FindFirstChild per frame
+local _aliveCache = {}
+local _aliveCacheFrame = 0
+
+local function IsAlive(player)
+    if not player or not player.Parent then return false end
+    local char = player.Character
+    if not char or not char.Parent then return false end
+    if not char:IsDescendantOf(Workspace) then return false end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health < 1 then return false end
+    if char:FindFirstChildOfClass("ForceField") then return false end
+    if hum:GetState() == Enum.HumanoidStateType.Dead then return false end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not root then return false end
+    return true
+end
+
+local function GetBodyPart(character, partName)
+    if not character then return nil end
+    if partName == "Torso" then
+        return character:FindFirstChild("UpperTorso")
+            or character:FindFirstChild("Torso")
+    end
+    return character:FindFirstChild(partName)
+        or character:FindFirstChild("HumanoidRootPart")
+end
+
+local function IsR15(character)
+    return character:FindFirstChild("UpperTorso") ~= nil
+end
+
+-- ══════════════════════════════════════════════════════════════
+--  SECTION 6: SMART GAME MODE & TEAM DETECTION (v5.0)
+--  Throttled detection, team change hooks, robust FFA heuristic
+-- ══════════════════════════════════════════════════════════════
+
+local GameMode = {
+    IsFFA         = false,
+    LastCheck     = 0,
+    CheckInterval = 0.1,
+}
+
+function GameMode:DetectMode()
+    local now = tick()
+    if now - self.LastCheck < self.CheckInterval then return end
+    self.LastCheck = now
+
+    local teams = TeamsService:GetTeams()
+    if #teams == 0 then
+        self.IsFFA = true
+        return
+    end
+
+    local teamCounts = {}
+    local withTeam, withoutTeam, total = 0, 0, 0
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        total = total + 1
+        if player.Team then
+            teamCounts[player.Team] = (teamCounts[player.Team] or 0) + 1
+            withTeam = withTeam + 1
+        else
+            withoutTeam = withoutTeam + 1
+        end
+    end
+
+    local distinctTeams = 0
+    for _ in pairs(teamCounts) do distinctTeams = distinctTeams + 1 end
+
+    self.IsFFA = (distinctTeams <= 1 or withoutTeam > withTeam or total < 2)
+end
+
+function GameMode:IsEnemy(player)
+    self:DetectMode()
+    if self.IsFFA then return true end
+    if not LocalPlayer.Team then return true end
+    if not player.Team then return false end
+    if LocalPlayer.Team ~= player.Team then return true end
+    if LocalPlayer.TeamColor ~= player.TeamColor then return true end
+    return false
+end
+
+function GameMode:GetTeamDisplayColor(player)
+    self:DetectMode()
+    if self.IsFFA then
+        return Color3.fromRGB(255, 85, 35)
+    elseif self:IsEnemy(player) then
+        return Color3.fromRGB(255, 40, 40)
+    else
+        return Color3.fromRGB(40, 180, 255)
+    end
+end
+
+-- ══════════════════════════════════════════════════════════════
+--  SECTION 7: OPTIMIZED VISIBILITY CHECK
+--  Cached filter, throttled rebuild, multi-point
+-- ══════════════════════════════════════════════════════════════
+
+local VisibilityParams = RaycastParams.new()
+VisibilityParams.FilterType = Enum.RaycastFilterType.Exclude
+VisibilityParams.IgnoreWater = true
+
+local _visFilterTime = 0
+local _visFilter = {}
+
+local function RebuildVisibilityFilter()
+    local now = tick()
+    if now - _visFilterTime < 0.1 then return end
+    _visFilterTime = now
+    local filter = {Camera}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p.Character then filter[#filter + 1] = p.Character end
+    end
+    VisibilityParams.FilterDescendantsInstances = filter
+end
+
+local function IsVisibleAdvanced(targetChar, targetPos)
+    if not targetChar or not targetChar.Parent then return false end
+    RebuildVisibilityFilter()
+    local origin = Camera.CFrame.Position
+
+    local checkPoints = { targetPos }
+    local head = targetChar:FindFirstChild("Head")
+    if head then checkPoints[#checkPoints + 1] = head.Position end
+    local torso = targetChar:FindFirstChild("UpperTorso") or targetChar:FindFirstChild("Torso")
+    if torso then checkPoints[#checkPoints + 1] = torso.Position end
+    local hrp = targetChar:FindFirstChild("HumanoidRootPart")
+    if hrp and hrp.Position ~= targetPos then checkPoints[#checkPoints + 1] = hrp.Position end
+
+    for _, point in ipairs(checkPoints) do
+        local direction = point - origin
+        local dist = direction.Magnitude
+        if dist < 1 then return true end
+        local result = Workspace:Raycast(origin, direction, VisibilityParams)
+        if not result or (origin - result.Position).Magnitude >= dist * 0.95 then
+            return true
+        end
+    end
+    return false
+end
+
+-- ══════════════════════════════════════════════════════════════
+--  SECTION 8: PREDICTION ENGINE v5.0
+--  Kalman-adaptive, strafe detection, jump arc, NO teleport cap
+-- ══════════════════════════════════════════════════════════════
+
+local PredictionData = {}
+local ROBLOX_GRAVITY = 196.2
+
+-- Configurable prediction parameters (exposed to UI)
+local PredictionConfig = {
+    VelocitySmoothing    = 15,   -- Base EMA speed for velocity (higher = snappier)
+    AccelSmoothing       = 8,    -- Base EMA speed for acceleration
+    AccelCap             = 800,  -- Max acceleration magnitude
+    VelocityCap          = 600,  -- Max velocity magnitude (0 = unlimited)
+    LookAheadMultiplier  = 4,    -- dt * this = look-ahead time
+    LookAheadMax         = 0.2,  -- Max look-ahead seconds
+    ManualPing           = 0,    -- 0 = auto ping, >0 = manual ping in ms
+    ConfidenceGainRate   = 4,    -- How fast confidence builds
+    ConfidenceLossRate   = 6,    -- How fast confidence drops on bad prediction
+    StrafeSensitivity    = 3,    -- Zero-crossings needed to detect strafe
+    StrafeWindow         = 0.8,  -- Seconds of history for strafe detection
+    StrafeDampen         = 0.25, -- Velocity multiplier during strafe
+    JumpArcEnabled       = true, -- Use parabolic jump prediction
+    JumpThreshold        = 12,   -- Y velocity threshold for airborne
+    DirectionReactFast   = 2.5,  -- Beta multiplier on sharp direction change
+    DirectionReactMed    = 1.6,  -- Beta multiplier on medium direction change
+    EarlyBeta            = 0.85, -- Beta for first few samples
+    EarlySamples         = 3,    -- How many samples before normal filtering
+}
+
+local function UpdatePrediction(player, worldPos, dt)
+    dt = math.max(dt, 0.0001)
+    local d = PredictionData[player]
+    local cfg = PredictionConfig
+
+    -- Teleport / Death Snap Reset (Anomaly Detector)
+    if d and ((worldPos - d.lastPos).Magnitude > 40 or worldPos.Y < Workspace.FallenPartsDestroyHeight + 50 or d.character ~= player.Character) then
+        d = nil
+    end
+
+    if not d then
+        PredictionData[player] = {
+            character = player.Character,
+            lastPos = worldPos, velocity = Vector3.zero, acceleration = Vector3.zero,
+            smoothVelocity = Vector3.zero, predictedPos = worldPos, prevVelocity = Vector3.zero,
+            sampleCount = 0, confidence = 0,
+            strafeHistory = {}, strafing = false, strafeCenter = worldPos,
+            airborne = false, jumpTime = 0, posHistory = {},
+        }
+        return
+    end
+
+    -- Velocity Smoothing Lanjutan (Linear Regression)
+    local now = tick()
+    table.insert(d.posHistory, { pos = worldPos, time = now })
+    while #d.posHistory > 7 do table.remove(d.posHistory, 1) end
+
+    local rawVelocity = Vector3.zero
+    if #d.posHistory >= 3 then
+        local n = #d.posHistory
+        local sumT, sumT2 = 0, 0
+        local sumVec, sumVecT = Vector3.zero, Vector3.zero
+        local firstTime = d.posHistory[1].time
+        for i = 1, n do
+            local t = d.posHistory[i].time - firstTime
+            local p = d.posHistory[i].pos
+            sumT = sumT + t
+            sumT2 = sumT2 + (t * t)
+            sumVec = sumVec + p
+            sumVecT = sumVecT + p * t
+        end
+        local denom = n * sumT2 - (sumT * sumT)
+        if denom > 0.0001 then
+            rawVelocity = (n * sumVecT - sumT * sumVec) / denom
+        else
+            rawVelocity = (worldPos - d.lastPos) / dt
+        end
+    else
+        rawVelocity = (worldPos - d.lastPos) / dt
+    end
+
+    if cfg.VelocityCap > 0 and rawVelocity.Magnitude > cfg.VelocityCap then
+        rawVelocity = rawVelocity.Unit * cfg.VelocityCap
+    end
+
+    -- Kalman confidence
+    local predErr = (worldPos - d.predictedPos).Magnitude
+    if predErr < 2 then
+        d.confidence = math.min(d.confidence + dt * cfg.ConfidenceGainRate, 1)
+    elseif predErr < 8 then
+        d.confidence = math.clamp(d.confidence - dt * 1.5, 0.15, 1)
+    else
+        d.confidence = math.max(d.confidence - dt * cfg.ConfidenceLossRate, 0)
+    end
+
+    -- Adaptive beta
+    local baseBeta = math.clamp(1 - math.exp(-cfg.VelocitySmoothing * dt), 0.05, 0.9)
+    local beta
+
+    d.sampleCount = math.min(d.sampleCount + 1, 30)
+    if d.sampleCount < cfg.EarlySamples then
+        beta = cfg.EarlyBeta
+    else
+        beta = baseBeta * (1.2 - d.confidence * 0.6)
+        beta = math.clamp(beta, 0.05, 0.95)
+    end
+
+    -- Direction change reaction
+    if d.velocity.Magnitude > 2 and rawVelocity.Magnitude > 2 then
+        local dot = d.velocity.Unit:Dot(rawVelocity.Unit)
+        if dot < 0.1 then
+            beta = math.clamp(beta * cfg.DirectionReactFast, 0.3, 0.95)
+        elseif dot < 0.4 then
+            beta = math.clamp(beta * cfg.DirectionReactMed, 0.15, 0.9)
+        end
+    end
+
+    -- Update velocity
+    d.prevVelocity = d.velocity
+    d.velocity = d.velocity:Lerp(rawVelocity, beta)
+
+    -- Update acceleration
+    local rawAccel = (d.velocity - d.prevVelocity) / dt
+    if rawAccel.Magnitude > cfg.AccelCap then rawAccel = rawAccel.Unit * cfg.AccelCap end
+    local accelBeta = math.clamp(1 - math.exp(-cfg.AccelSmoothing * dt), 0.05, 0.6)
+    d.acceleration = d.acceleration:Lerp(rawAccel, accelBeta)
+
+    -- Smooth velocity for strafe
+    local smoothBeta = math.clamp(1 - math.exp(-5 * dt), 0.02, 0.4)
+    d.smoothVelocity = d.smoothVelocity:Lerp(d.velocity, smoothBeta)
+
+    -- STRAFE DETECTION
+    local hx = d.velocity.X
+    local sign = hx > 1 and 1 or (hx < -1 and -1 or 0)
+    if sign ~= 0 then
+        d.strafeHistory[#d.strafeHistory + 1] = { sign = sign, time = now }
+    end
+    while #d.strafeHistory > 0 and (now - d.strafeHistory[1].time) > cfg.StrafeWindow do
+        table.remove(d.strafeHistory, 1)
+    end
+    local crossings = 0
+    for i = 2, #d.strafeHistory do
+        if d.strafeHistory[i].sign ~= d.strafeHistory[i - 1].sign then crossings = crossings + 1 end
+    end
+    d.strafing = crossings >= cfg.StrafeSensitivity
+    if d.strafing then
+        d.strafeCenter = d.strafeCenter:Lerp(worldPos, math.clamp(dt * 5, 0.05, 0.3))
+    end
+
+    -- AIRBORNE DETECTION & SMART JUMP LOGIC
+    local char = player.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local wasAir = d.airborne
+    
+    if hum then
+        local state = hum:GetState()
+        d.airborne = state == Enum.HumanoidStateType.Jumping or state == Enum.HumanoidStateType.Freefall
+    else
+        local yVel = d.velocity.Y
+        d.airborne = math.abs(yVel) > cfg.JumpThreshold
+    end
+    
+    if d.airborne and not wasAir then d.jumpTime = 0 end
+    if d.airborne then d.jumpTime = d.jumpTime + dt end
+
+    d.lastPos = worldPos
+end
+
+local function PredictPosition(player, worldPos, dt)
+    local d = PredictionData[player]
+    if not d or d.sampleCount < 2 then return worldPos end
+    local cfg = PredictionConfig
+
+    -- Dynamic Ping Compensation
+    local ping = 0
+    if cfg.ManualPing > 0 then
+        ping = cfg.ManualPing / 1000
+    else
+        pcall(function() ping = LocalPlayer:GetNetworkPing() end)
+        if not ping or ping == 0 then
+            pcall(function()
+                local stats = game:GetService("Stats")
+                local net = stats:FindFirstChild("Network")
+                if net and net:FindFirstChild("ServerStatsItem") then
+                    ping = net.ServerStatsItem["Data Ping"]:GetValue() / 1000
+                end
+            end)
+        end
+        ping = math.clamp(ping or 0.05, 0.02, 0.2)
+    end
+
+    local lookAhead = math.clamp(dt * cfg.LookAheadMultiplier + (ping * 1.5), 0, cfg.LookAheadMax)
+    
+    local dist = (Camera.CFrame.Position - worldPos).Magnitude
+    
+    -- Extreme Close-Quarters Fix: If the target is right in front (e.g. < 35 studs), 
+    -- prediction lookahead causes extreme angular overshoots. Scale it down to 0 at point-blank.
+    if dist < 45 then 
+        lookAhead = lookAhead * math.clamp((dist - 10) / 35, 0, 1) 
+    end
+
+    local predicted
+
+    if d.strafing then
+        local centerBlend = d.strafeCenter:Lerp(worldPos, 0.7)
+        predicted = centerBlend + d.smoothVelocity * (lookAhead * cfg.StrafeDampen)
+    elseif cfg.JumpArcEnabled and d.airborne and d.jumpTime < 2 then
+        local t = lookAhead
+        local char = player.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if hum and hum:GetState() == Enum.HumanoidStateType.Jumping then
+            predicted = worldPos + d.velocity * t
+        else
+            predicted = worldPos + d.velocity * t + Vector3.new(0, -ROBLOX_GRAVITY, 0) * (0.5 * t * t)
+            if predicted.Y < worldPos.Y - 4 then predicted = Vector3.new(predicted.X, worldPos.Y - 4, predicted.Z) end
+        end
+    else
+        predicted = worldPos + d.velocity * lookAhead + d.acceleration * (0.5 * lookAhead * lookAhead)
+    end
+
+    -- DEATH SNAP & OVERSHOOT PREVENTION (Strict Radius Clamp)
+    local maxPredictionRadius = math.clamp(dist * 0.35, 2, 18)
+    local pDist = (predicted - worldPos).Magnitude
+    if pDist > maxPredictionRadius then
+        predicted = worldPos + (predicted - worldPos).Unit * maxPredictionRadius
+    end
+
+    d.predictedPos = predicted
+
+    local blend = math.clamp(d.confidence * 0.7 + 0.2, 0.2, 0.9)
+    return worldPos:Lerp(predicted, blend)
+end
+
+local function ClearPrediction(player) PredictionData[player] = nil end
+local function ClearAllPredictions() table.clear(PredictionData) end
+
+-- ══════════════════════════════════════════════════════════════
+--  SECTION 9: DRAWING OVERLAYS + TARGET HUD
+-- ══════════════════════════════════════════════════════════════
+
+local FOVCircle = SafeCreateDrawing("Circle", {
+    Color = Color3.fromRGB(255, 255, 0), Thickness = 1.5, NumSides = 60,
+    Radius = 120, Filled = false, Visible = false, Transparency = 0.3
+})
+
+local AimTracer = SafeCreateDrawing("Line", {
+    Color = Color3.fromRGB(255, 50, 50), Thickness = 1.5,
+    Visible = false, Transparency = 0.3
+})
+
+local HUDTargetName = SafeCreateDrawing("Text", {
+    Size = 14, Font = 2, Center = false, Outline = true,
+    OutlineColor = Color3.new(0, 0, 0), Visible = false, Color = Color3.fromRGB(255, 255, 255)
+})
+local HUDTargetHP = SafeCreateDrawing("Text", {
+    Size = 12, Font = 2, Center = false, Outline = true, OutlineColor = Color3.new(0, 0, 0), Visible = false,
+})
+local HUDTargetDist = SafeCreateDrawing("Text", {
+    Size = 12, Font = 2, Center = false, Outline = true, OutlineColor = Color3.new(0, 0, 0), Visible = false,
+    Color = Color3.fromRGB(200, 200, 200)
+})
+local HUDTargetVis = SafeCreateDrawing("Text", {
+    Size = 11, Font = 2, Center = false, Outline = true, OutlineColor = Color3.new(0, 0, 0), Visible = false,
+})
+local HUDHPBarBg = SafeCreateDrawing("Line", {
+    Thickness = 5, Color = Color3.fromRGB(30, 30, 30), Visible = false
+})
+local HUDHPBarFill = SafeCreateDrawing("Line", { Thickness = 3, Visible = false })
+
+local function GetHPColor(frac)
+    if frac > 0.5 then
+        return Color3.fromRGB(math.floor(255 * (1 - frac) * 2), 255, 50)
+    else
+        return Color3.fromRGB(255, math.floor(255 * frac * 2), 50)
+    end
+end
+
+local function HideTargetHUD()
+    if HUDTargetName then HUDTargetName.Visible = false end
+    if HUDTargetHP then HUDTargetHP.Visible = false end
+    if HUDTargetDist then HUDTargetDist.Visible = false end
+    if HUDTargetVis then HUDTargetVis.Visible = false end
+    if HUDHPBarBg then HUDHPBarBg.Visible = false end
+    if HUDHPBarFill then HUDHPBarFill.Visible = false end
+end
+
+local function UpdateTargetHUD(info, isVisible)
+    local cx = Camera.ViewportSize.X / 2 + 25
+    local cy = Camera.ViewportSize.Y / 2 + 25
+    if HUDTargetName then
+        HUDTargetName.Text = "TARGET: " .. (info.name or "Unknown")
+        HUDTargetName.Position = Vector2.new(cx, cy)
+        HUDTargetName.Visible = true
+    end
+    local hpFrac = math.clamp(info.health / math.max(info.maxHealth, 1), 0, 1)
+    local hpColor = GetHPColor(hpFrac)
+    if HUDTargetHP then
+        HUDTargetHP.Text = string.format("HP: %d / %d", math.floor(info.health), math.floor(info.maxHealth))
+        HUDTargetHP.Position = Vector2.new(cx, cy + 18)
+        HUDTargetHP.Color = hpColor
+        HUDTargetHP.Visible = true
+    end
+    if HUDTargetDist then
+        HUDTargetDist.Text = string.format("%.0f studs", info.dist3D)
+        HUDTargetDist.Position = Vector2.new(cx, cy + 33)
+        HUDTargetDist.Visible = true
+    end
+    if HUDTargetVis then
+        HUDTargetVis.Text = isVisible and "VISIBLE" or "OCCLUDED"
+        HUDTargetVis.Color = isVisible and Color3.fromRGB(80, 255, 80) or Color3.fromRGB(255, 100, 100)
+        HUDTargetVis.Position = Vector2.new(cx, cy + 48)
+        HUDTargetVis.Visible = true
+    end
+    local barW, barY = 100, cy + 66
+    if HUDHPBarBg then
+        HUDHPBarBg.From = Vector2.new(cx, barY)
+        HUDHPBarBg.To = Vector2.new(cx + barW, barY)
+        HUDHPBarBg.Visible = true
+    end
+    if HUDHPBarFill then
+        HUDHPBarFill.From = Vector2.new(cx, barY)
+        HUDHPBarFill.To = Vector2.new(cx + barW * hpFrac, barY)
+        HUDHPBarFill.Color = hpColor
+        HUDHPBarFill.Visible = true
+    end
+end
+
+-- ══════════════════════════════════════════════════════════════
+--  SECTION 10: AIMBOT SYSTEM v5.0
+--  Fully customizable aim engine
+-- ══════════════════════════════════════════════════════════════
+
+local Aimbot = {
+    -- Core
+    Enabled       = false,
+    AimPart       = "Head",
+    Smoothing     = 6,
+    FOVRadius     = 120,
+    BaseFOVRadius = 120,
+    MaxDistance    = 100000,
+    MinDistance    = 0,
+    TeamCheck     = true,
+    VisCheck      = false,
+    Prediction    = true,
+    ShowFOV       = false,
+    ShowTracer    = true,
+    SnapMode      = false,
+    
+    -- Smart 3D Engine
+    Smart3D           = false,
+    Smart3DRange      = 80,
+    Smart3DStrength   = 1.0,
+
+    -- Assist
+    AimStrength      = 0.65,
+    AimKeyMode       = "Always On",
+    PriorityMode     = "Crosshair",
+    AutoSwitch       = true,
+    Humanize         = false,
+    HumanizeStrength = 2,
+    DynamicFOV       = true,
+    StickyVis        = true,
+    StickyVisStrength = 0.2,
+    ShowTargetHUD    = true,
+
+    -- Smooth aim tuning
+    RampUpTime       = 0.15,
+    MaxAngularSpeed  = 720,
+    UnlockThreshold  = 2.5,
+    GracePeriod      = 0.35,
+    AutoSwitchRampUp = 0.08,
+
+    -- State (internal)
+    LockedPlayer = nil, LockedInfo = nil, OccludedTime = 0,
+    LockAge = 0, LastTargetScreenPos = nil, AimKeyActive = false,
+    CurrentFOVRadius = 120, IgnoredNames = {},
+    HumanizeSeed = math.random(0, 10000), LastTargetVisible = false,
+}
+
+function Aimbot:GetTargetInfo(player)
+    if not IsAlive(player) then return nil end
+    local char = player.Character
+    local aimPart = GetBodyPart(char, self.AimPart)
+    if not aimPart or not aimPart.Parent then return nil end
+    local worldPos = aimPart.Position
+    local screenPos3, onScreen = Camera:WorldToViewportPoint(worldPos)
+    local screenPos = Vector2.new(screenPos3.X, screenPos3.Y)
+    local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    local dist3D = myRoot and (worldPos - myRoot.Position).Magnitude or math.huge
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    return {
+        player = player, character = char, name = player.DisplayName or player.Name,
+        health = hum and hum.Health or 0, maxHealth = hum and hum.MaxHealth or 100,
+        worldPos = worldPos, screenPos = screenPos, depth = screenPos3.Z,
+        onScreen = onScreen, dist3D = dist3D
+    }
+end
+
+function Aimbot:ScoreTarget(info, center)
+    local sd = (info.screenPos - center).Magnitude
+    if self.PriorityMode == "Lowest HP" then
+        return info.health + sd * 0.1
+    elseif self.PriorityMode == "Nearest" then
+        return info.dist3D + sd * 0.3
+    elseif self.PriorityMode == "Threat" then
+        local score = sd * 0.5
+        local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        local eRoot = info.character and info.character:FindFirstChild("HumanoidRootPart")
+        if myRoot and eRoot then
+            local d2m = (myRoot.Position - eRoot.Position)
+            if d2m.Magnitude > 1 then
+                score = score - eRoot.CFrame.LookVector:Dot(d2m.Unit) * 120
+            end
+        end
+        return score + (info.health / math.max(info.maxHealth, 1)) * 20
+    else
+        return sd + (info.health / math.max(info.maxHealth, 1)) * 30 + math.min(info.dist3D * 0.01, 20)
+    end
+end
+
+function Aimbot:IsLockValid(dt)
+    local p = self.LockedPlayer
+    if not p or not p.Parent or not IsAlive(p) then return false end
+    if self.TeamCheck and not GameMode:IsEnemy(p) then return false end
+    if table.find(self.IgnoredNames, p.Name) then return false end
+
+    local info = self:GetTargetInfo(p)
+    if not info then return false end
+    if info.dist3D > self.MaxDistance then return false end
+    if self.MinDistance > 0 and info.dist3D < self.MinDistance then return false end
+
+    -- User override breakout
+    local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    local sd = (info.screenPos - center).Magnitude
+    
+    if self.Smart3D and info.dist3D <= self.Smart3DRange then
+        -- 360 mode: check if user flicked mouse to cancel lock
+        local mouseDelta = UserInputService:GetMouseDelta()
+        if mouseDelta.Magnitude > 25 then
+            return false
+        end
+    else
+        if sd > self.CurrentFOVRadius * self.UnlockThreshold then
+            return false
+        end
+    end
+
+    -- Visibility with grace
+    if self.VisCheck then
+        if not IsVisibleAdvanced(info.character, info.worldPos) then
+            self.OccludedTime = self.OccludedTime + dt
+            self.LastTargetVisible = false
+            if self.OccludedTime > self.GracePeriod then return false end
+        else
+            self.OccludedTime = 0
+            self.LastTargetVisible = true
+        end
+    else
+        self.LastTargetVisible = true
+    end
+    return true
+end
+
+function Aimbot:AcquireTarget()
+    local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    if self.AutoSwitch and self.LastTargetScreenPos then
+        center = self.LastTargetScreenPos
+        self.LastTargetScreenPos = nil
+    end
+    
+    local potentialTargets = {}
+    local camPos = Camera.CFrame.Position
+    local camLook = Camera.CFrame.LookVector
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer or not IsAlive(player) then continue end
+        if self.TeamCheck and not GameMode:IsEnemy(player) then continue end
+        if table.find(self.IgnoredNames, player.Name) then continue end
+        local info = self:GetTargetInfo(player)
+        if not info then continue end
+        if info.dist3D > self.MaxDistance then continue end
+        if self.MinDistance > 0 and info.dist3D < self.MinDistance then continue end
+        
+        local score = -math.huge
+
+        if self.Smart3D and info.dist3D <= self.Smart3DRange then
+            -- 3D Priority Engine (360 degrees)
+            local dirToTarget = (info.worldPos - camPos).Unit
+            local dot = camLook:Dot(dirToTarget)
+            
+            -- Base score favors closer targets
+            score = 10000 - info.dist3D * 10
+            
+            -- Flank / Behind threat massive bonus
+            if dot < 0.2 and info.dist3D < (self.Smart3DRange * 0.7) then
+                score = score + (50000 * self.Smart3DStrength)
+            end
+            
+            -- Health
+            score = score + (100 - info.health) * 5
+            
+            -- Stickiness
+            if self.LockedPlayer == player then score = score + 2000 end
+            
+        else
+            -- Classic 2D FOV
+            if not info.onScreen or info.depth <= 0 then continue end
+            if (info.screenPos - center).Magnitude > self.CurrentFOVRadius then continue end
+            
+            -- Score using traditional 2D rules (Negative is better in 2D ScoreTarget, but we sort descending here)
+            -- So we invert ScoreTarget to match descending sort
+            score = -self:ScoreTarget(info, center)
+        end
+
+        if score > -math.huge then
+            table.insert(potentialTargets, { player = player, info = info, score = score })
+        end
+    end
+
+    table.sort(potentialTargets, function(a, b) return a.score > b.score end)
+
+    local best = nil
+    for _, targetData in ipairs(potentialTargets) do
+        if self.VisCheck then
+            if IsVisibleAdvanced(targetData.info.character, targetData.info.worldPos) then
+                best = targetData.player
+                break
+            end
+        else
+            best = targetData.player
+            break
+        end
+    end
+
+    self.LockedPlayer = best
+    self.OccludedTime = 0
+    self.LockAge = 0
+    self.LastTargetVisible = best ~= nil
+end
+
+function Aimbot:Unlock()
+    if self.LockedInfo then
+        self.LastTargetScreenPos = self.LockedInfo.screenPos
+    end
+    self.LockedPlayer = nil
+    self.LockedInfo = nil
+    self.OccludedTime = 0
+    self.LockAge = 0
+    self.LastTargetVisible = false
+end
+
+function Aimbot:SmoothAim(targetWorldPos, dt)
+    if self.SnapMode then
+        Camera.CFrame = CFrame.new(Camera.CFrame.Position, targetWorldPos)
+        return
+    end
+
+    local camPos = Camera.CFrame.Position
+
+    -- Humanization
+    if self.Humanize and self.HumanizeStrength > 0 then
+        local t = tick()
+        local px = math.noise(t * 2.5, self.HumanizeSeed, 0) * self.HumanizeStrength
+        local py = math.noise(self.HumanizeSeed, t * 2.5, 0) * self.HumanizeStrength
+        local depth = (targetWorldPos - camPos).Magnitude
+        if depth > 1 then
+            local fov = math.rad(Camera.FieldOfView)
+            local ps = 2 * depth * math.tan(fov / 2) / Camera.ViewportSize.Y
+            targetWorldPos = targetWorldPos
+                + Camera.CFrame.RightVector * (px * ps)
+                + Camera.CFrame.UpVector * (py * ps)
+        end
+    end
+
+    -- Base smoothing alpha
+    local speed = 120 / math.max(self.Smoothing, 0.5)
+    local alpha = math.clamp(1 - math.exp(-speed * dt), 0.001, 1)
+
+    -- Ramp-up ease-in
+    if self.LockAge < self.RampUpTime then
+        local ramp = math.clamp(self.LockAge / self.RampUpTime, 0.05, 1)
+        alpha = alpha * (ramp * ramp)
+    end
+
+    -- Sticky vis reduction
+    if self.StickyVis and self.OccludedTime > 0 then
+        alpha = alpha * self.StickyVisStrength
+    end
+
+    -- Close-Quarters Tracking Boost
+    local distToTarget = (camPos - targetWorldPos).Magnitude
+    local finalStrength = self.AimStrength
+    if distToTarget < 50 then
+        -- Boost aim strength significantly when they are right in front of you
+        finalStrength = math.clamp(finalStrength * 1.5, 0.5, 1)
+    end
+
+    -- Aim strength
+    alpha = alpha * finalStrength
+
+    -- Angular velocity cap
+    if (camPos - targetWorldPos).Magnitude < 0.1 then return end
+    local targetCF = CFrame.new(camPos, targetWorldPos)
+    local dot = Camera.CFrame.LookVector:Dot(targetCF.LookVector)
+    local angle = math.acos(math.clamp(dot, -1, 1))
+    local maxAng = math.rad(self.MaxAngularSpeed) * dt
+    if angle > 0.001 and angle * alpha > maxAng then
+        alpha = maxAng / angle
+    end
+
+    alpha = math.clamp(alpha, 0.001, 1)
+    Camera.CFrame = Camera.CFrame:Lerp(targetCF, alpha)
+end
+
+function Aimbot:Update(dt)
+    -- Dynamic FOV
+    if self.DynamicFOV then
+        local scale = Camera.FieldOfView / 70
+        local target = self.BaseFOVRadius * scale
+        if not self.LockedPlayer then target = target * 1.15 end
+        self.CurrentFOVRadius = self.CurrentFOVRadius + (target - self.CurrentFOVRadius) * math.min(dt * 8, 1)
+    else
+        self.CurrentFOVRadius = self.BaseFOVRadius
+    end
+
+    -- FOV circle
+    if FOVCircle then
+        local c = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+        FOVCircle.Position = c
+        FOVCircle.Radius = self.CurrentFOVRadius
+        FOVCircle.Visible = self.Enabled and self.ShowFOV
+    end
+
+    if not self.Enabled then
+        if AimTracer then AimTracer.Visible = false end
+        HideTargetHUD()
+        return
+    end
+
+    local isAiming = (self.AimKeyMode == "Always On") or self.AimKeyActive
+    if not isAiming then
+        if AimTracer then AimTracer.Visible = false end
+        HideTargetHUD()
+        return
+    end
+
+    -- Validate lock
+    if self.LockedPlayer then
+        if not self:IsLockValid(dt) then
+            if self.AutoSwitch then
+                if self.LockedInfo then
+                    self.LastTargetScreenPos = self.LockedInfo.screenPos
+                end
+                self:Unlock()
+                self:AcquireTarget()
+                if self.LockedPlayer then
+                    self.LockAge = self.AutoSwitchRampUp
+                end
+            else
+                self:Unlock()
+            end
+        end
+    end
+
+    if not self.LockedPlayer then self:AcquireTarget() end
+
+    -- Aim update
+    if self.LockedPlayer then
+        self.LockAge = self.LockAge + dt
+        local info = self:GetTargetInfo(self.LockedPlayer)
+        if info then
+            self.LockedInfo = info
+            UpdatePrediction(self.LockedPlayer, info.worldPos, dt)
+            local aimPos = self.Prediction and PredictPosition(self.LockedPlayer, info.worldPos, dt) or info.worldPos
+            if typeof(aimPos) == "Vector3" and aimPos.X == aimPos.X and aimPos.Y == aimPos.Y and aimPos.Z == aimPos.Z then
+                self:SmoothAim(aimPos, dt)
+            end
+
+            if AimTracer then
+                local vp = Camera.ViewportSize
+                AimTracer.From = Vector2.new(vp.X / 2, vp.Y)
+                AimTracer.To = info.screenPos
+                AimTracer.Color = GameMode:GetTeamDisplayColor(self.LockedPlayer)
+                AimTracer.Visible = self.ShowTracer
+            end
+            if self.ShowTargetHUD then
+                UpdateTargetHUD(info, self.LastTargetVisible)
+            else
+                HideTargetHUD()
+            end
+        else
+            self:Unlock()
+        end
+    else
+        self.LockedInfo = nil
+        if AimTracer then AimTracer.Visible = false end
+        HideTargetHUD()
+    end
+end
+
+-- ══════════════════════════════════════════════════════════════
+--  SECTION 11: SMART ESP SYSTEM
+-- ══════════════════════════════════════════════════════════════
+
+local ESP = {
+    Enabled = false, ShowHighlight = true, ShowName = true, ShowDistance = true,
+    ShowTracer = true, ShowHealthBar = true, ShowSkeleton = false, TeamCheck = true,
+}
+
+local ESPCache = {}
+
+local function HidePlayerESP(cache)
+    if cache.Highlight then pcall(function() cache.Highlight.Enabled = false end) end
+    if cache.Text then cache.Text.Visible = false end
+    if cache.DistText then cache.DistText.Visible = false end
+    if cache.Tracer then cache.Tracer.Visible = false end
+    if cache.HealthBg then cache.HealthBg.Visible = false end
+    if cache.HealthBar then cache.HealthBar.Visible = false end
+    if cache.Bones then for _, b in ipairs(cache.Bones) do b.Visible = false end end
+end
+
+local function CleanPlayerESP(player)
+    local cache = ESPCache[player]
+    if not cache then return end
+    if cache.Highlight then pcall(function() cache.Highlight:Destroy() end) end
+    if cache.Text then pcall(function() cache.Text:Remove() end) end
+    if cache.DistText then pcall(function() cache.DistText:Remove() end) end
+    if cache.Tracer then pcall(function() cache.Tracer:Remove() end) end
+    if cache.HealthBg then pcall(function() cache.HealthBg:Remove() end) end
+    if cache.HealthBar then pcall(function() cache.HealthBar:Remove() end) end
+    if cache.Bones then for _, b in ipairs(cache.Bones) do pcall(function() b:Remove() end) end end
+    ESPCache[player] = nil
+end
+
+local function CleanAllESP()
+    for p in pairs(ESPCache) do CleanPlayerESP(p) end
+    table.clear(ESPCache)
+end
+
+local function GetESPCache(player)
+    if ESPCache[player] then return ESPCache[player] end
+    local c = {}
+    c.Highlight = nil
+    c.Text = SafeCreateDrawing("Text", { Size = 14, Font = 2, Center = true, Outline = true, OutlineColor = Color3.new(0,0,0), Visible = false })
+    c.DistText = SafeCreateDrawing("Text", { Size = 12, Font = 2, Center = true, Outline = true, OutlineColor = Color3.new(0,0,0), Visible = false })
+    c.Tracer = SafeCreateDrawing("Line", { Thickness = 1.5, Visible = false, Transparency = 0.5 })
+    c.HealthBg = SafeCreateDrawing("Line", { Thickness = 4, Color = Color3.fromRGB(40,40,40), Visible = false })
+    c.HealthBar = SafeCreateDrawing("Line", { Thickness = 2, Visible = false })
+    c.Bones = {}
+    for i = 1, 15 do c.Bones[i] = SafeCreateDrawing("Line", { Thickness = 1.5, Visible = false, Transparency = 0.8 }) end
+    ESPCache[player] = c
+    return c
+end
+
+local function DrawBone(obj, p1, p2, color)
+    if not p1 or not p2 then obj.Visible = false return end
+    local a, v1 = Camera:WorldToViewportPoint(p1.Position)
+    local b, v2 = Camera:WorldToViewportPoint(p2.Position)
+    if v1 or v2 then
+        obj.From = Vector2.new(a.X, a.Y)
+        obj.To = Vector2.new(b.X, b.Y)
+        obj.Color = color
+        obj.Visible = true
+    else
+        obj.Visible = false
+    end
+end
+
+local function UpdateSkeleton(cache, char, color)
+    if not cache.Bones then return end
+    if IsR15(char) then
+        local parts = {}
+        for _, n in ipairs({"Head","UpperTorso","LowerTorso","LeftUpperArm","LeftLowerArm","LeftHand","RightUpperArm","RightLowerArm","RightHand","LeftUpperLeg","LeftLowerLeg","LeftFoot","RightUpperLeg","RightLowerLeg","RightFoot"}) do
+            parts[n] = char:FindFirstChild(n)
+        end
+        DrawBone(cache.Bones[1], parts.Head, parts.UpperTorso, color)
+        DrawBone(cache.Bones[2], parts.UpperTorso, parts.LowerTorso, color)
+        DrawBone(cache.Bones[3], parts.UpperTorso, parts.LeftUpperArm, color)
+        DrawBone(cache.Bones[4], parts.LeftUpperArm, parts.LeftLowerArm, color)
+        DrawBone(cache.Bones[5], parts.LeftLowerArm, parts.LeftHand, color)
+        DrawBone(cache.Bones[6], parts.UpperTorso, parts.RightUpperArm, color)
+        DrawBone(cache.Bones[7], parts.RightUpperArm, parts.RightLowerArm, color)
+        DrawBone(cache.Bones[8], parts.RightLowerArm, parts.RightHand, color)
+        DrawBone(cache.Bones[9], parts.LowerTorso, parts.LeftUpperLeg, color)
+        DrawBone(cache.Bones[10], parts.LeftUpperLeg, parts.LeftLowerLeg, color)
+        DrawBone(cache.Bones[11], parts.LeftLowerLeg, parts.LeftFoot, color)
+        DrawBone(cache.Bones[12], parts.LowerTorso, parts.RightUpperLeg, color)
+        DrawBone(cache.Bones[13], parts.RightUpperLeg, parts.RightLowerLeg, color)
+        DrawBone(cache.Bones[14], parts.RightLowerLeg, parts.RightFoot, color)
+        if cache.Bones[15] then cache.Bones[15].Visible = false end
+    else
+        local h = char:FindFirstChild("Head")
+        local t = char:FindFirstChild("Torso")
+        DrawBone(cache.Bones[1], h, t, color)
+        DrawBone(cache.Bones[2], t, char:FindFirstChild("Left Arm"), color)
+        DrawBone(cache.Bones[3], t, char:FindFirstChild("Right Arm"), color)
+        DrawBone(cache.Bones[4], t, char:FindFirstChild("Left Leg"), color)
+        DrawBone(cache.Bones[5], t, char:FindFirstChild("Right Leg"), color)
+        for i = 6, 15 do if cache.Bones[i] then cache.Bones[i].Visible = false end end
+    end
+end
+
+-- ESP throttle: only update every N frames to save CPU
+local _espFrameCounter = 0
+local ESP_UPDATE_RATE = 2 -- Update every 2 frames
+
+local function UpdateAllESP()
+    if not ESP.Enabled then return end
+    _espFrameCounter = _espFrameCounter + 1
+    if _espFrameCounter % ESP_UPDATE_RATE ~= 0 then return end
+
+    local active = {}
+    local vpX, vpY = Camera.ViewportSize.X, Camera.ViewportSize.Y
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer or not IsAlive(player) then continue end
+        if ESP.TeamCheck and not GameMode:IsEnemy(player) then continue end
+        local char = player.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if not root or not hum then continue end
+
+        local sp3, onScreen = Camera:WorldToViewportPoint(root.Position)
+        if not onScreen then
+            local cache = ESPCache[player]
+            if cache then HidePlayerESP(cache) end
+            continue
+        end
+
+        active[player] = true
+        local cache = GetESPCache(player)
+        local sx, sy = sp3.X, sp3.Y
+        local col = GameMode:GetTeamDisplayColor(player)
+
+        if ESP.ShowHighlight then
+            if not cache.Highlight or not cache.Highlight.Parent then
+                local hl = Instance.new("Highlight")
+                hl.Name = "ESPHighlight"
+                hl.FillColor = col; hl.FillTransparency = 0.6
+                hl.OutlineColor = col; hl.OutlineTransparency = 0
+                hl.Adornee = char; hl.Parent = char
+                cache.Highlight = hl
+            else
+                cache.Highlight.Enabled = true
+                cache.Highlight.FillColor = col
+                cache.Highlight.OutlineColor = col
+                if cache.Highlight.Adornee ~= char then
+                    cache.Highlight.Adornee = char; cache.Highlight.Parent = char
+                end
+            end
+        else
+            if cache.Highlight then pcall(function() cache.Highlight.Enabled = false end) end
+        end
+
+        if ESP.ShowName and cache.Text then
+            cache.Text.Text = string.format("%s [%d HP]", player.DisplayName or player.Name, math.floor(hum.Health))
+            cache.Text.Position = Vector2.new(sx, sy - 50)
+            cache.Text.Color = col; cache.Text.Visible = true
+        elseif cache.Text then cache.Text.Visible = false end
+
+        if ESP.ShowDistance and cache.DistText then
+            local mr = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+            local d = mr and math.floor((mr.Position - root.Position).Magnitude) or 0
+            cache.DistText.Text = string.format("[%d studs]", d)
+            cache.DistText.Position = Vector2.new(sx, sy - 35)
+            cache.DistText.Color = col; cache.DistText.Visible = true
+        elseif cache.DistText then cache.DistText.Visible = false end
+
+        if ESP.ShowTracer and cache.Tracer then
+            cache.Tracer.From = Vector2.new(vpX / 2, vpY)
+            cache.Tracer.To = Vector2.new(sx, sy)
+            cache.Tracer.Color = col; cache.Tracer.Visible = true
+        elseif cache.Tracer then cache.Tracer.Visible = false end
+
+        if ESP.ShowHealthBar and cache.HealthBg and cache.HealthBar then
+            local bw, by = 40, sy - 22
+            local frac = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
+            cache.HealthBg.From = Vector2.new(sx - bw/2, by)
+            cache.HealthBg.To = Vector2.new(sx + bw/2, by); cache.HealthBg.Visible = true
+            cache.HealthBar.From = Vector2.new(sx - bw/2, by)
+            cache.HealthBar.To = Vector2.new(sx - bw/2 + bw * frac, by)
+            cache.HealthBar.Color = GetHPColor(frac); cache.HealthBar.Visible = true
+        else
+            if cache.HealthBg then cache.HealthBg.Visible = false end
+            if cache.HealthBar then cache.HealthBar.Visible = false end
+        end
+
+        if ESP.ShowSkeleton then UpdateSkeleton(cache, char, col)
+        elseif cache.Bones then for _, b in ipairs(cache.Bones) do b.Visible = false end end
+    end
+
+    for p, cache in pairs(ESPCache) do
+        if not active[p] then HidePlayerESP(cache) end
+    end
+end
+
+-- ══════════════════════════════════════════════════════════════
+--  SECTION 12: RESPAWN-SMART PLAYER TRACKING
+-- ══════════════════════════════════════════════════════════════
+
+local function HookPlayerRespawn(player)
+    if player == LocalPlayer then return end
+    local ck = "CharAdded_" .. player.UserId
+    TrackConnection(ck, player.CharacterAdded:Connect(function()
+        task.wait(0.2)
+        CleanPlayerESP(player)
+        ClearPrediction(player)
+        if Aimbot.LockedPlayer == player then Aimbot:Unlock() end
+    end))
+    local dk = "CharRemoving_" .. player.UserId
+    TrackConnection(dk, player.CharacterRemoving:Connect(function()
+        local cache = ESPCache[player]
+        if cache then HidePlayerESP(cache) end
+        ClearPrediction(player)
+        if Aimbot.LockedPlayer == player then Aimbot:Unlock() end
+    end))
+end
+
+for _, p in ipairs(Players:GetPlayers()) do HookPlayerRespawn(p) end
+TrackConnection("PlayerAdded", Players.PlayerAdded:Connect(function(p) HookPlayerRespawn(p) end))
+TrackConnection("PlayerRemoving", Players.PlayerRemoving:Connect(function(p)
+    CleanPlayerESP(p); ClearPrediction(p)
+    KillConnection("CharAdded_" .. p.UserId); KillConnection("CharRemoving_" .. p.UserId)
+    if Aimbot.LockedPlayer == p then Aimbot:Unlock() end
+end))
+
+TrackConnection("TeamChanged", LocalPlayer:GetPropertyChangedSignal("Team"):Connect(function()
+    GameMode.LastCheck = 0; GameMode:DetectMode(); Aimbot:Unlock(); CleanAllESP()
+end))
+TrackConnection("LocalCharAdded", LocalPlayer.CharacterAdded:Connect(function()
+    GameMode.LastCheck = 0; GameMode:DetectMode(); ClearAllPredictions(); Aimbot:Unlock()
+end))
+
+-- ══════════════════════════════════════════════════════════════
+--  SECTION 13: PERIODIC REFRESH
+-- ══════════════════════════════════════════════════════════════
+
+local _refreshCounter = 0
+
+local function PeriodicRefresh()
+    _refreshCounter = _refreshCounter + 1
+    if _refreshCounter < 300 then return end -- Every ~5 sec at 60fps
+    _refreshCounter = 0
+    GameMode.LastCheck = 0; GameMode:DetectMode()
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and not Connections["CharAdded_" .. p.UserId] then
+            HookPlayerRespawn(p)
+        end
+    end
+end
+TrackConnection("PeriodicRefresh", RunService.Heartbeat:Connect(PeriodicRefresh))
+
+-- ══════════════════════════════════════════════════════════════
+--  SECTION 13.5: TELEPORT KILL (BACKSTAB)
+-- ══════════════════════════════════════════════════════════════
+
+local TeleportKill = {
+    Enabled = false,
+    IntervalMs = 50,
+    Distance = 5,
+    Target = nil,
+    LastTeleport = 0,
+}
+
+local function UpdateTeleportKill()
+    if not TeleportKill.Enabled then
+        TeleportKill.Target = nil
+        return
+    end
+
+    local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return end
+
+    -- Safe validation to prevent teleporting to dead/respawning bodies
+    local function IsValidForTeleport(p)
+        if not IsAlive(p) then return false end
+        if Aimbot.TeamCheck and not GameMode:IsEnemy(p) then return false end
+        local eRoot = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+        if not eRoot then return false end
+        -- Prevent teleporting into the void or spawn boxes that are way below the map
+        if eRoot.Position.Y < (Workspace.FallenPartsDestroyHeight + 50) then return false end
+        -- Prevent teleporting to players who are impossibly far away (often spawn boxes)
+        if (eRoot.Position - myRoot.Position).Magnitude > 4000 then return false end
+        return true
+    end
+
+    -- Validate current target
+    if TeleportKill.Target then
+        if not IsValidForTeleport(TeleportKill.Target) then
+            TeleportKill.Target = nil
+        end
+    end
+
+    -- Find new target
+    if not TeleportKill.Target then
+        local bestTarget = nil
+        local bestDist = math.huge
+
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player == LocalPlayer then continue end
+            if IsValidForTeleport(player) then
+                local enemyRoot = player.Character:FindFirstChild("HumanoidRootPart")
+                local dist = (enemyRoot.Position - myRoot.Position).Magnitude
+                if dist < bestDist then
+                    bestDist = dist
+                    bestTarget = player
+                end
+            end
+        end
+        TeleportKill.Target = bestTarget
+    end
+
+    -- Teleport safely (running every frame prevents jitter)
+    if TeleportKill.Target then
+        local enemyRoot = TeleportKill.Target.Character.HumanoidRootPart
+        
+        -- Flatten the look vector so we don't teleport into the ground if they are ragdolled or tilted
+        local lookVec = enemyRoot.CFrame.LookVector
+        local flatLook = Vector3.new(lookVec.X, 0, lookVec.Z)
+        if flatLook.Magnitude > 0.001 then
+            flatLook = flatLook.Unit
+        else
+            flatLook = Vector3.new(0, 0, -1)
+        end
+        
+        -- Wall check to ensure we don't get stuck inside a map wall behind them
+        local rayParams = RaycastParams.new()
+        rayParams.FilterType = Enum.RaycastFilterType.Exclude
+        rayParams.FilterDescendantsInstances = {LocalPlayer.Character, enemyRoot.Parent}
+        local rayResult = Workspace:Raycast(enemyRoot.Position, -flatLook * TeleportKill.Distance, rayParams)
+        
+        local backPos = enemyRoot.Position - (flatLook * TeleportKill.Distance)
+        if rayResult then
+            backPos = rayResult.Position + (flatLook * 1) -- Keep 1 stud away from the wall
+        end
+        
+        -- Teleport and face the enemy
+        myRoot.CFrame = CFrame.lookAt(backPos, enemyRoot.Position)
+        
+        -- Reset velocity to prevent physics flinging and rubber-banding
+        myRoot.AssemblyLinearVelocity = Vector3.zero
+        myRoot.AssemblyAngularVelocity = Vector3.zero
+    end
+end
+
+-- ══════════════════════════════════════════════════════════════
+--  SECTION 14: MAIN LOOP & INPUT HANDLERS
+-- ══════════════════════════════════════════════════════════════
+
+TrackConnection("MainLoop", RunService.RenderStepped:Connect(function(dt)
+    Camera = Workspace.CurrentCamera
+    if not Camera then return end
+
+    Aimbot:Update(dt)
+    UpdateAllESP()
+    UpdateTeleportKill()
+end))
+
+TrackConnection("AimInputBegan", UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then
+        if Aimbot.AimKeyMode == "Hold RMB" then
+            Aimbot.AimKeyActive = true
+        elseif Aimbot.AimKeyMode == "Toggle RMB" then
+            Aimbot.AimKeyActive = not Aimbot.AimKeyActive
+        end
+    end
+    if input.KeyCode == Enum.KeyCode.P then
+        TeleportKill.Enabled = not TeleportKill.Enabled
+        if TeleportKill.Enabled then
+            Rayfield:Notify({
+                Title = "Teleport Kill",
+                Content = "Enabled! Locking onto target...",
+                Duration = 2,
+                Image = 4483362458,
+            })
+        else
+            Rayfield:Notify({
+                Title = "Teleport Kill",
+                Content = "Disabled.",
+                Duration = 2,
+                Image = 4483362458,
+            })
+        end
+    end
+end))
+
+TrackConnection("AimInputEnded", UserInputService.InputEnded:Connect(function(input, gpe)
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then
+        if Aimbot.AimKeyMode == "Hold RMB" then
+            Aimbot.AimKeyActive = false
+        end
+    end
+end))
+
+
+-- ══════════════════════════════════════════════════════════════
+--  SECTION 15: RAYFIELD UI & CONFIGURATION
+-- ══════════════════════════════════════════════════════════════
+
+local MovementTab = Window:CreateTab("Movement", nil)
+local AimbotTab = Window:CreateTab("Aimbot", nil)
+local AdvancedAimbotTab = Window:CreateTab("Adv. Aimbot", nil)
+local Smart3DTab = Window:CreateTab("3D Smart Aim", nil)
+local TeleportTab = Window:CreateTab("Teleport Kill", nil)
+local ESPTab = Window:CreateTab("ESP", nil)
+local GraphicsTab = Window:CreateTab("Graphics", nil)
+
+-- ──────────────────────────────────────────────────────────────
+--  MOVEMENT TAB
+-- ──────────────────────────────────────────────────────────────
+
+local InfJumpEnabled = false
+MovementTab:CreateToggle({
+    Name = "Infinite Jump",
+    CurrentValue = false,
+    Flag = "InfJumpToggle",
+    Callback = function(Value)
+        InfJumpEnabled = Value
+        if not Value then
+            KillConnection("InfJump")
+            return
+        end
+        TrackConnection("InfJump", UserInputService.InputBegan:Connect(function(input, gpe)
+            if gpe or not InfJumpEnabled then return end
+            if input.KeyCode == Enum.KeyCode.Space then
+                local char = LocalPlayer.Character
+                local hum  = char and char:FindFirstChildOfClass("Humanoid")
+                local root = char and char:FindFirstChild("HumanoidRootPart")
+                if hum and root and hum:GetState() ~= Enum.HumanoidStateType.Dead then
+                    hum:ChangeState(Enum.HumanoidStateType.Jumping)
+                    root.AssemblyLinearVelocity = Vector3.new(
+                        root.AssemblyLinearVelocity.X,
+                        hum.JumpPower,
+                        root.AssemblyLinearVelocity.Z
+                    )
+                end
+            end
+        end))
+    end,
+})
+
+local Flying = false
+local FlySpeed = 50
+
+local function StartFlight()
+    local char = LocalPlayer.Character
+    if not char then return end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    for _, obj in ipairs(root:GetChildren()) do
+        if obj:IsA("BodyVelocity") or obj:IsA("BodyGyro") then obj:Destroy() end
+    end
+    local bv = Instance.new("BodyVelocity")
+    bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+    bv.Velocity = Vector3.zero
+    bv.Parent = root
+    local bg = Instance.new("BodyGyro")
+    bg.MaxTorque = Vector3.new(1e5, 1e5, 1e5)
+    bg.CFrame = root.CFrame
+    bg.Parent = root
+    TrackConnection("FlightLoop", RunService.RenderStepped:Connect(function()
+        if not Flying then return end
+        local cam = Workspace.CurrentCamera
+        local dir = Vector3.zero
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir = dir + cam.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir = dir - cam.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir = dir - cam.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir = dir + cam.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir = dir + Vector3.new(0, 1, 0) end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then dir = dir - Vector3.new(0, 1, 0) end
+        bv.Velocity = dir.Magnitude > 0 and dir.Unit * FlySpeed or Vector3.zero
+    end))
+end
+
+local function StopFlight()
+    KillConnection("FlightLoop")
+    local char = LocalPlayer.Character
+    if char then
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if root then
+            for _, obj in ipairs(root:GetChildren()) do
+                if obj:IsA("BodyVelocity") or obj:IsA("BodyGyro") then obj:Destroy() end
+            end
+        end
+    end
+end
+
+MovementTab:CreateToggle({
+    Name = "Flight Mode",
+    CurrentValue = false,
+    Flag = "FlightToggle",
+    Callback = function(Value)
+        Flying = Value
+        if Value then StartFlight() else StopFlight() end
+    end,
+})
+
+MovementTab:CreateSlider({
+    Name = "Fly Speed",
+    Range = {0, 400},
+    Increment = 5,
+    Suffix = " Speed",
+    CurrentValue = 50,
+    Flag = "FlySpeedSlider",
+    Callback = function(Value) FlySpeed = Value end,
+})
+
+local NoClipEnabled = false
+MovementTab:CreateToggle({
+    Name = "No Clip",
+    CurrentValue = false,
+    Flag = "NoClipToggle",
+    Callback = function(Value)
+        NoClipEnabled = Value
+        if not Value then
+            KillConnection("NoClipLoop")
+            local char = LocalPlayer.Character
+            if char then
+                for _, part in ipairs(char:GetDescendants()) do
+                    if part:IsA("BasePart") then part.CanCollide = true end
+                end
+            end
+            return
+        end
+        TrackConnection("NoClipLoop", RunService.Stepped:Connect(function()
+            if not NoClipEnabled then return end
+            local char = LocalPlayer.Character
+            if not char then return end
+            for _, part in ipairs(char:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = false
+                end
+            end
+        end))
+    end,
+})
+
+MovementTab:CreateSlider({
+    Name = "Walk Speed",
+    Range = {0, 200},
+    Increment = 1,
+    Suffix = " Speed",
+    CurrentValue = 16,
+    Flag = "WalkSpeedSlider",
+    Callback = function(Value)
+        local char = LocalPlayer.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if hum then hum.WalkSpeed = Value end
+    end,
+})
+
+MovementTab:CreateSlider({
+    Name = "Jump Power",
+    Range = {0, 200},
+    Increment = 1,
+    Suffix = " Power",
+    CurrentValue = 50,
+    Flag = "JumpPowerSlider",
+    Callback = function(Value)
+        local char = LocalPlayer.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            hum.UseJumpPower = true
+            hum.JumpPower = Value
+        end
+    end,
+})
+
+-- ──────────────────────────────────────────────────────────────
+--  AIMBOT TAB
+-- ──────────────────────────────────────────────────────────────
+
+AimbotTab:CreateToggle({
+    Name = "Enable Ultra Aimbot",
+    CurrentValue = false,
+    Flag = "AimbotToggle",
+    Callback = function(Value) Aimbot.Enabled = Value end,
+})
+
+AimbotTab:CreateDropdown({
+    Name = "Activation Mode",
+    Options = {"Always On", "Hold RMB", "Toggle RMB"},
+    CurrentOption = {"Always On"},
+    Flag = "AimKeyModeDropdown",
+    Callback = function(Option) Aimbot.AimKeyMode = Option[1] or Option end,
+})
+
+AimbotTab:CreateDropdown({
+    Name = "Target Priority",
+    Options = {"Crosshair", "Nearest", "Lowest HP", "Threat"},
+    CurrentOption = {"Crosshair"},
+    Flag = "PriorityDropdown",
+    Callback = function(Option) Aimbot.PriorityMode = Option[1] or Option end,
+})
+
+AimbotTab:CreateDropdown({
+    Name = "Aim Part",
+    Options = {"Head", "HumanoidRootPart", "Torso"},
+    CurrentOption = {"Head"},
+    Flag = "AimPartDropdown",
+    Callback = function(Option) Aimbot.AimPart = Option[1] or Option end,
+})
+
+AimbotTab:CreateToggle({
+    Name = "Velocity Prediction",
+    CurrentValue = true,
+    Flag = "PredictionToggle",
+    Callback = function(Value) Aimbot.Prediction = Value end,
+})
+
+AimbotTab:CreateToggle({
+    Name = "Team Check",
+    CurrentValue = true,
+    Flag = "TeamCheckToggle",
+    Callback = function(Value) Aimbot.TeamCheck = Value end,
+})
+
+AimbotTab:CreateToggle({
+    Name = "Visibility Check (Wall Check)",
+    CurrentValue = true,
+    Flag = "VisCheckToggle",
+    Callback = function(Value) Aimbot.VisCheck = Value end,
+})
+
+AimbotTab:CreateToggle({
+    Name = "Auto-Switch on Kill",
+    CurrentValue = true,
+    Flag = "AutoSwitchToggle",
+    Callback = function(Value) Aimbot.AutoSwitch = Value end,
+})
+
+AimbotTab:CreateSlider({
+    Name = "FOV Radius",
+    Range = {30, 500},
+    Increment = 10,
+    Suffix = " px",
+    CurrentValue = 120,
+    Flag = "AimbotFOVSlider",
+    Callback = function(Value) Aimbot.BaseFOVRadius = Value end,
+})
+
+AimbotTab:CreateToggle({
+    Name = "Dynamic FOV (Scale with zoom)",
+    CurrentValue = true,
+    Flag = "DynamicFOVToggle",
+    Callback = function(Value) Aimbot.DynamicFOV = Value end,
+})
+
+AimbotTab:CreateSlider({
+    Name = "Max Distance",
+    Range = {50, 5000},
+    Increment = 50,
+    Suffix = " studs",
+    CurrentValue = 1000,
+    Flag = "AimbotDistSlider",
+    Callback = function(Value) Aimbot.MaxDistance = Value end,
+})
+
+AimbotTab:CreateSlider({
+    Name = "Aim Strength (Assist)",
+    Range = {0, 100},
+    Increment = 1,
+    Suffix = "%",
+    CurrentValue = 65,
+    Flag = "AimStrengthSlider",
+    Callback = function(Value) Aimbot.AimStrength = Value / 100 end,
+})
+
+AimbotTab:CreateSlider({
+    Name = "Base Smoothing",
+    Range = {1, 20},
+    Increment = 1,
+    CurrentValue = 6,
+    Flag = "AimSmoothSlider",
+    Callback = function(Value) Aimbot.Smoothing = Value end,
+})
+
+AimbotTab:CreateToggle({
+    Name = "Show FOV Circle",
+    CurrentValue = true,
+    Flag = "ShowFOVToggle",
+    Callback = function(Value) Aimbot.ShowFOV = Value end,
+})
+
+AimbotTab:CreateToggle({
+    Name = "Show Aim Tracer",
+    CurrentValue = true,
+    Flag = "ShowAimTracerToggle",
+    Callback = function(Value) Aimbot.ShowTracer = Value end,
+})
+
+AimbotTab:CreateToggle({
+    Name = "Show Target Info HUD",
+    CurrentValue = true,
+    Flag = "ShowTargetHUDToggle",
+    Callback = function(Value) Aimbot.ShowTargetHUD = Value end,
+})
+
+-- ──────────────────────────────────────────────────────────────
+--  ADVANCED AIMBOT TAB (Kalman & Tuning)
+-- ──────────────────────────────────────────────────────────────
+
+AdvancedAimbotTab:CreateToggle({
+    Name = "Instant Snap Mode (Aimbot Overdrive)",
+    CurrentValue = false,
+    Flag = "SnapModeToggle",
+    Callback = function(Value) Aimbot.SnapMode = Value end,
+})
+
+AdvancedAimbotTab:CreateToggle({
+    Name = "Humanization (Perlin Noise)",
+    CurrentValue = false,
+    Flag = "HumanizeToggle",
+    Callback = function(Value) Aimbot.Humanize = Value end,
+})
+
+AdvancedAimbotTab:CreateSlider({
+    Name = "Humanization Strength",
+    Range = {1, 10},
+    Increment = 1,
+    CurrentValue = 2,
+    Flag = "HumanizeStrSlider",
+    Callback = function(Value) Aimbot.HumanizeStrength = Value end,
+})
+
+AdvancedAimbotTab:CreateSlider({
+    Name = "Look-Ahead Multiplier",
+    Info = "How far ahead to predict based on velocity",
+    Range = {1, 10},
+    Increment = 0.5,
+    CurrentValue = 4,
+    Flag = "LookAheadSlider",
+    Callback = function(Value) PredictionConfig.LookAheadMultiplier = Value end,
+})
+
+AdvancedAimbotTab:CreateSlider({
+    Name = "Velocity Smoothing (EMA)",
+    Range = {1, 30},
+    Increment = 1,
+    CurrentValue = 15,
+    Flag = "VelSmoothSlider",
+    Callback = function(Value) PredictionConfig.VelocitySmoothing = Value end,
+})
+
+AdvancedAimbotTab:CreateToggle({
+    Name = "Jump Arc Prediction",
+    Info = "Predict parabolic arc when target jumps",
+    CurrentValue = true,
+    Flag = "JumpArcToggle",
+    Callback = function(Value) PredictionConfig.JumpArcEnabled = Value end,
+})
+
+AdvancedAimbotTab:CreateToggle({
+    Name = "Sticky Visibility",
+    Info = "Don't instantly snap off if target hides for a split second",
+    CurrentValue = true,
+    Flag = "StickyVisToggle",
+    Callback = function(Value) Aimbot.StickyVis = Value end,
+})
+
+AdvancedAimbotTab:CreateInput({
+    Name = "Ignore Username",
+    PlaceholderText = "Enter username to ignore",
+    RemoveTextAfterFocusLost = true,
+    Callback = function(username)
+        if username and username ~= "" then
+            if not table.find(Aimbot.IgnoredNames, username) then
+                table.insert(Aimbot.IgnoredNames, username)
+            end
+        end
+    end,
+})
+
+AdvancedAimbotTab:CreateInput({
+    Name = "Remove Ignored Username",
+    PlaceholderText = "Enter username to un-ignore",
+    RemoveTextAfterFocusLost = true,
+    Callback = function(username)
+        for i = #Aimbot.IgnoredNames, 1, -1 do
+            if Aimbot.IgnoredNames[i] == username then
+                table.remove(Aimbot.IgnoredNames, i)
+                break
+            end
+        end
+    end,
+})
+
+AdvancedAimbotTab:CreateSlider({
+    Name = "Manual Ping Compensation (ms)",
+    Info = "Overrides auto-ping if > 0. Use if aim trails behind target.",
+    Range = {0, 500},
+    Increment = 5,
+    CurrentValue = 0,
+    Flag = "ManualPingSlider",
+    Callback = function(Value) PredictionConfig.ManualPing = Value end,
+})
+
+-- ──────────────────────────────────────────────────────────────
+--  3D SMART AIM TAB (360 ENGINE)
+-- ──────────────────────────────────────────────────────────────
+
+Smart3DTab:CreateToggle({
+    Name = "Enable Beta 3D Smart Priority Engine",
+    Info = "Aimbot will spin 360 degrees to lock onto flanking targets / backstabbers.",
+    CurrentValue = false,
+    Flag = "Smart3DToggle",
+    Callback = function(Value) Aimbot.Smart3D = Value end,
+})
+
+Smart3DTab:CreateSlider({
+    Name = "3D Detection Range (studs)",
+    Info = "How far away an enemy behind you can be before aimbot spins.",
+    Range = {30, 300},
+    Increment = 10,
+    CurrentValue = 80,
+    Flag = "Smart3DRangeSlider",
+    Callback = function(Value) Aimbot.Smart3DRange = Value end,
+})
+
+Smart3DTab:CreateSlider({
+    Name = "Flank Threat Multiplier",
+    Info = "Strength of prioritizing enemies behind you.",
+    Range = {0.1, 5.0},
+    Increment = 0.1,
+    CurrentValue = 1.0,
+    Flag = "Smart3DStrengthSlider",
+    Callback = function(Value) Aimbot.Smart3DStrength = Value end,
+})
+
+Smart3DTab:CreateParagraph({
+    Title = "Flick Cancel Feature",
+    Content = "When 3D Smart Aim spins you around to shoot someone behind you, simply flick your mouse quickly to cancel the lock and regain control.",
+})
+
+-- ──────────────────────────────────────────────────────────────
+--  TELEPORT KILL TAB
+-- ──────────────────────────────────────────────────────────────
+
+TeleportTab:CreateToggle({
+    Name = "Enable Teleport Kill (Key: P)",
+    Info = "Auto-teleports you behind an enemy target.",
+    CurrentValue = false,
+    Flag = "TeleportKillToggle",
+    Callback = function(Value) TeleportKill.Enabled = Value end,
+})
+
+TeleportTab:CreateSlider({
+    Name = "Teleport Interval (ms)",
+    Info = "How often to update position behind target.",
+    Range = {10, 500},
+    Increment = 10,
+    Suffix = " ms",
+    CurrentValue = 50,
+    Flag = "TeleportIntervalSlider",
+    Callback = function(Value) TeleportKill.IntervalMs = Value end,
+})
+
+TeleportTab:CreateSlider({
+    Name = "Distance Behind Target",
+    Info = "Studs behind the target.",
+    Range = {1, 20},
+    Increment = 1,
+    Suffix = " studs",
+    CurrentValue = 5,
+    Flag = "TeleportDistanceSlider",
+    Callback = function(Value) TeleportKill.Distance = Value end,
+})
+
+-- ──────────────────────────────────────────────────────────────
+--  ESP TAB
+-- ──────────────────────────────────────────────────────────────
+
+ESPTab:CreateToggle({
+    Name = "Enable ESP",
+    CurrentValue = false,
+    Flag = "ESPMainToggle",
+    Callback = function(Value)
+        ESP.Enabled = Value
+        if not Value then CleanAllESP() end
+    end,
+})
+
+ESPTab:CreateToggle({
+    Name = "Team Check",
+    CurrentValue = true,
+    Flag = "ESPTeamCheckToggle",
+    Callback = function(Value) ESP.TeamCheck = Value end,
+})
+
+ESPTab:CreateToggle({
+    Name = "Show Highlight",
+    CurrentValue = true,
+    Flag = "ESPHighlightToggle",
+    Callback = function(Value) ESP.ShowHighlight = Value end,
+})
+
+ESPTab:CreateToggle({
+    Name = "Show Names",
+    CurrentValue = true,
+    Flag = "ESPNameToggle",
+    Callback = function(Value) ESP.ShowName = Value end,
+})
+
+ESPTab:CreateToggle({
+    Name = "Show Distance",
+    CurrentValue = true,
+    Flag = "ESPDistToggle",
+    Callback = function(Value) ESP.ShowDistance = Value end,
+})
+
+ESPTab:CreateToggle({
+    Name = "Show Health Bars",
+    CurrentValue = true,
+    Flag = "ESPHealthBarToggle",
+    Callback = function(Value) ESP.ShowHealthBar = Value end,
+})
+
+ESPTab:CreateToggle({
+    Name = "Show Tracers",
+    CurrentValue = false,
+    Flag = "ESPTracerToggle",
+    Callback = function(Value) ESP.ShowTracer = Value end,
+})
+
+ESPTab:CreateToggle({
+    Name = "Show Skeletons",
+    CurrentValue = false,
+    Flag = "ESPSkeletonToggle",
+    Callback = function(Value) ESP.ShowSkeleton = Value end,
+})
+
+-- ──────────────────────────────────────────────────────────────
+--  GRAPHICS TAB
+-- ──────────────────────────────────────────────────────────────
+
+GraphicsTab:CreateToggle({
+    Name = "Fullbright",
+    CurrentValue = false,
+    Flag = "FullbrightToggle",
+    Callback = function(Value)
+        local lighting = game:GetService("Lighting")
+        if Value then
+            lighting.Brightness = 2
+            lighting.ClockTime = 14
+            lighting.FogEnd = 100000
+            lighting.GlobalShadows = false
+            lighting.OutdoorAmbient = Color3.fromRGB(128, 128, 128)
+        else
+            lighting.Brightness = 1
+            lighting.ClockTime = 8
+            lighting.FogEnd = 100000
+            lighting.GlobalShadows = true
+            lighting.OutdoorAmbient = Color3.fromRGB(70, 70, 70)
+        end
+    end,
+})
+
+local originalMaterials = {}
+local originalShadows = game:GetService("Lighting").GlobalShadows
+
+GraphicsTab:CreateToggle({
+    Name = "Lowest Graphics Mode",
+    CurrentValue = false,
+    Flag = "LowGraphicsToggle",
+    Callback = function(Value)
+        local lighting = game:GetService("Lighting")
+        if Value then
+            lighting.GlobalShadows = false
+            lighting.FogEnd = 9e9
+            for _, desc in ipairs(Workspace:GetDescendants()) do
+                if desc:IsA("BasePart") and desc.ClassName ~= "Terrain" then
+                    originalMaterials[desc] = desc.Material
+                    desc.Material = Enum.Material.SmoothPlastic
+                end
+            end
+            for _, fx in ipairs(lighting:GetChildren()) do
+                if fx:IsA("PostEffect") or fx:IsA("BloomEffect") or fx:IsA("BlurEffect")
+                or fx:IsA("SunRaysEffect") or fx:IsA("DepthOfFieldEffect") then
+                    fx.Enabled = false
+                end
+            end
+        else
+            lighting.GlobalShadows = originalShadows
+            for part, mat in pairs(originalMaterials) do
+                if part and part.Parent then part.Material = mat end
+            end
+            table.clear(originalMaterials)
+            for _, fx in ipairs(lighting:GetChildren()) do
+                if fx:IsA("PostEffect") or fx:IsA("BloomEffect") or fx:IsA("BlurEffect")
+                or fx:IsA("SunRaysEffect") or fx:IsA("DepthOfFieldEffect") then
+                    fx.Enabled = true
+                end
+            end
+        end
+    end,
+})
+
+GraphicsTab:CreateToggle({
+    Name = "Night Mode (enable Fullbright after)",
+    CurrentValue = false,
+    Flag = "ForceNightTime",
+    Callback = function(Value)
+        KillConnection("NightLoop")
+        local lighting = game:GetService("Lighting")
+        if Value then
+            lighting.ClockTime = 0
+            lighting.Ambient = Color3.fromRGB(30, 30, 40)
+            lighting.OutdoorAmbient = Color3.fromRGB(15, 15, 20)
+            TrackConnection("NightLoop", RunService.Heartbeat:Connect(function()
+                lighting.ClockTime = 0
+            end))
+        else
+            lighting.ClockTime = 14
+            lighting.Ambient = Color3.fromRGB(128, 128, 128)
+            lighting.OutdoorAmbient = Color3.fromRGB(128, 128, 128)
+        end
+    end,
+})
+
+GraphicsTab:CreateToggle({
+    Name = "Color Vibrance",
+    CurrentValue = false,
+    Flag = "VibranceMode",
+    Callback = function(Value)
+        local lighting = game:GetService("Lighting")
+        if Value then
+            local cc = lighting:FindFirstChild("VibranceColorCorrection")
+                or Instance.new("ColorCorrectionEffect")
+            cc.Name = "VibranceColorCorrection"
+            cc.Saturation = 0.45
+            cc.Contrast = 0.15
+            cc.Brightness = 0.02
+            cc.Parent = lighting
+        else
+            local cc = lighting:FindFirstChild("VibranceColorCorrection")
+            if cc then cc:Destroy() end
+        end
+    end,
+})
+
+GraphicsTab:CreateToggle({
+    Name = "Realistic Mode",
+    CurrentValue = false,
+    Flag = "RealisticMode",
+    Callback = function(Value)
+        local lighting = game:GetService("Lighting")
+        if Value then
+            lighting.Technology = Enum.Technology.Future
+            lighting.GlobalShadows = true
+            lighting.Brightness = 2.5
+            lighting.EnvironmentSpecularScale = 1
+            lighting.EnvironmentDiffuseScale = 1
+
+            local cc = lighting:FindFirstChild("RealColor") or Instance.new("ColorCorrectionEffect")
+            cc.Name = "RealColor"
+            cc.Brightness = -0.02
+            cc.Contrast = 0.18
+            cc.Saturation = 0.08
+            cc.TintColor = Color3.fromRGB(255, 250, 245)
+            cc.Parent = lighting
+
+            local bloom = lighting:FindFirstChild("RealBloom") or Instance.new("BloomEffect")
+            bloom.Name = "RealBloom"
+            bloom.Intensity = 0.35
+            bloom.Size = 24
+            bloom.Threshold = 0.9
+            bloom.Parent = lighting
+
+            local sun = lighting:FindFirstChild("RealSunRays") or Instance.new("SunRaysEffect")
+            sun.Name = "RealSunRays"
+            sun.Intensity = 0.25
+            sun.Spread = 0.7
+            sun.Parent = lighting
+
+            local atm = lighting:FindFirstChild("RealAtmosphere") or Instance.new("Atmosphere")
+            atm.Name = "RealAtmosphere"
+            atm.Density = 0.3
+            atm.Offset = 0.25
+            atm.Glare = 1
+            atm.Haze = 0.5
+            atm.Parent = lighting
+        else
+            lighting.Technology = Enum.Technology.ShadowMap
+            lighting.Brightness = 1
+            lighting.EnvironmentSpecularScale = 0
+            lighting.EnvironmentDiffuseScale = 0
+
+            local names = {"RealColor", "RealBloom", "RealSunRays", "RealAtmosphere"}
+            for _, name in ipairs(names) do
+                local obj = lighting:FindFirstChild(name)
+                if obj then obj:Destroy() end
+            end
+        end
+    end,
+})
+
+-- ══════════════════════════════════════════════════════════════
+--  CLEANUP HOOKS
+-- ══════════════════════════════════════════════════════════════
+-- Clean up everything when the local player leaves
+
+pcall(function()
+    game:BindToClose(function()
+        KillAllConnections()
+        DestroyAllDrawings()
+        CleanAllESP()
+        ClearAllPredictions()
+    end)
+end)
+
+Rayfield:LoadConfiguration()
